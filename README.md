@@ -28,8 +28,13 @@ Four initial surfaces are simultaneously deformed using multiscale velocity fiel
 ---
 
 ## Installation
-## Dataset
-## Evaluation
-## Training
+## Segmentation (9-Class)
 
-## Citation
+Train a 3D U-Net to produce 9-class segmentations used by later stages.
+
+**Run**
+```bash
+python -m simcortex.segmentation.cli train   --config-name train
+python -m simcortex.segmentation.cli predict --config-name predict
+python -m simcortex.segmentation.cli eval    --config-name eval
+
