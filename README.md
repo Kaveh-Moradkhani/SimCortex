@@ -37,4 +37,15 @@ Train a 3D U-Net to produce 9-class segmentations used by later stages.
 python -m simcortex.segmentation.cli train   --config-name train
 python -m simcortex.segmentation.cli predict --config-name predict
 python -m simcortex.segmentation.cli eval    --config-name eval
+```
+## Initial Surface Generation (collision-free)
+
+Extract **lh/rh pial** and **lh/rh white** cortical meshes from the 9-class predictions.  
+The algorithm tunes the **pial level first** (both hemispheres together) until there’s no pial↔pial collision; then it fixes that level and sets **white** a bit inside the pial (`white_offset`), tuning **left white** and then **right white**.
+
+**Run**
+```bash
+python -m simcortex.initial_surf.cli generate --config-name generate
+```
+
 
