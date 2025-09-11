@@ -47,5 +47,13 @@ The algorithm tunes the **pial level first** (both hemispheres together) until t
 ```bash
 python -m simcortex.initial_surf.cli generate --config-name generate
 ```
+## Surface Reconstruction (diffeomorphic)
+This stage simultaneously deforms the four initial surfaces.
 
+**Run**
+```bash
+python -m simcortex.surf_recon.cli train --config-name train
+python -m simcortex.surf_recon.cli predict --config-name predict
+python -m simcortex.surf_recon.evaluate --config-name eval
+```
 
