@@ -541,7 +541,7 @@ simcortex initsurf generate \
 
 ### Typical runtime
 
-A typical runtime is approximately **70–110 s / subject** with `n_workers: 8`,
+A typical runtime is approximately 70–110 s / subject with `n_workers: 8`,
 depending on hardware, I/O speed, and dataset characteristics.
 ---
 
