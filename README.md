@@ -154,10 +154,10 @@ datasets/<dataset-name>/
   bids/                 # raw BIDS dataset
   derivatives/          # processed outputs (BIDS derivatives)
     freesurfer-7.4.1/
-    scpp-preproc-0.1/
-    scpp-seg-0.1/
-    scpp-initsurf-0.1/
-    scpp-deform-0.1/
+    simcortex-preproc-0.1/
+    simcortex-seg-0.1/
+    simcortex-initsurf-0.1/
+    simcortex-deform-0.1/
   splits/
     <dataset>_split.csv
 ```
@@ -171,7 +171,7 @@ SimCortex reads inputs from `derivatives/` and writes outputs back to `derivativ
 - MNI outputs are labeled with `space-MNI152`
 - segmentation outputs use `desc-seg9_dseg`
 - InitSurf produces both mesh outputs and SDF / ribbon outputs
-- Deform writes final surface meshes under `scpp-deform-*`
+- Deform writes final surface meshes under `simcortex-deform-*`
 
 > Important: keep dataset naming and folder organization consistent across stages. In practice, this makes multi-stage and multi-dataset workflows much easier to maintain.
 
@@ -228,11 +228,11 @@ outputs.out_roots.HCP_YA
 
 A typical full workflow is:
 
-1. Run **Preprocessing** for each dataset to create `scpp-preproc-0.1`
+1. Run **Preprocessing** for each dataset to create `simcortex-preproc-0.1`
 2. Train **Segmentation** and select a checkpoint
-3. Run **Segmentation inference** to create `scpp-seg-0.1`
-4. Run **InitSurf** to create `scpp-initsurf-0.1`
-5. Train, infer, and evaluate **Deformation** to create `scpp-deform-0.1`
+3. Run **Segmentation inference** to create `simcortex-seg-0.1`
+4. Run **InitSurf** to create `simcortex-initsurf-0.1`
+5. Train, infer, and evaluate **Deformation** to create `simcortex-deform-0.1`
 
 This staged design is intentional and makes debugging, ablation, and evaluation easier.
 
@@ -293,7 +293,7 @@ Stage 1 requires Python packages including:
 ```bash
 simcortex fs-to-mni \
   --freesurfer-root /path/to/datasets/<dataset>/derivatives/freesurfer-7.4.1 \
-  --out-deriv-root /path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
+  --out-deriv-root /path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
   --mni-template /path/to/SimCortex/src/MNI152_T1_1mm.nii.gz \
   --transform-type affine \
   --n4 \
@@ -307,7 +307,7 @@ simcortex fs-to-mni \
 ```bash
 simcortex fs-to-mni \
   --freesurfer-root /path/to/datasets/<dataset>/derivatives/freesurfer-7.4.1 \
-  --out-deriv-root /path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
+  --out-deriv-root /path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
   --mni-template /path/to/SimCortex/src/MNI152_T1_1mm.nii.gz \
   --participant-label sub-0001 \
   --participant-label sub-0019 \
@@ -322,7 +322,7 @@ simcortex fs-to-mni \
 A typical subject output looks like:
 
 ```text
-scpp-preproc-0.1/
+simcortex-preproc-0.1/
   dataset_description.json
   sub-XXXX/
     ses-01/
@@ -367,7 +367,7 @@ This stage trains and applies a 3D U-Net to predict a **9-class segmentation** i
 
 ### Expected inputs from Stage 1
 
-For each subject under `scpp-preproc-*`:
+For each subject under `simcortex-preproc-*`:
 
 - `..._space-MNI152_desc-preproc_T1w.nii.gz`
 - `..._space-MNI152_desc-aparc+aseg_dseg.nii.gz`
@@ -375,7 +375,7 @@ For each subject under `scpp-preproc-*`:
 
 ### Output prediction naming
 
-Segmentation predictions are written under `scpp-seg-*` as:
+Segmentation predictions are written under `simcortex-seg-*` as:
 
 ```text
 sub-XXXX/ses-01/anat/sub-XXXX_ses-01_space-MNI152_desc-seg9_dseg.nii.gz
@@ -386,7 +386,7 @@ Use dataset.path and a split CSV for that dataset.
 
 ```bash
 simcortex seg train \
-  dataset.path=/path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
+  dataset.path=/path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
   dataset.split_file=/path/to/datasets/<dataset>/splits/dataset_split.csv \
   outputs.root=/path/to/simcortex-runs/seg/exp01 \
   trainer.use_ddp=false
@@ -397,8 +397,8 @@ Use a combined split CSV with a dataset column and provide one root per dataset.
 ```bash
 simcortex seg train \
   dataset.split_file=/path/to/datasets/splits/dataset_split.csv \
-  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-preproc-0.1 \
-  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-preproc-0.1 \
+  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-preproc-0.1 \
+  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-preproc-0.1 \
   outputs.root=/path/to/simcortex-runs/seg/exp01_hcpya+oasis1 \
   trainer.use_ddp=false
 ```
@@ -408,8 +408,8 @@ simcortex seg train \
 ```bash
 simcortex seg train --torchrun --nproc-per-node 2 \
   dataset.split_file=/path/to/datasets/splits/dataset_split.csv \
-  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-preproc-0.1 \
-  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-preproc-0.1 \
+  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-preproc-0.1 \
+  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-preproc-0.1 \
   outputs.root=/path/to/simcortex-runs/seg/exp01_hcpya+oasis1 \
   trainer.use_ddp=true
 ```
@@ -424,15 +424,15 @@ Use `dataset.path` and `outputs.out_root` when running inference for one dataset
 
 ```bash
 simcortex seg infer \
-  dataset.path=/path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
+  dataset.path=/path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
   dataset.split_file=/path/to/datasets/<dataset>/splits/dataset_split.csv \
   dataset.split_name=test \
   model.ckpt_path=/path/to/seg_best_dice.pt \
-  outputs.out_root=/path/to/datasets/<dataset>/derivatives/scpp-seg-0.1
+  outputs.out_root=/path/to/datasets/<dataset>/derivatives/simcortex-seg-0.1
 ```
 In this mode, predictions are written under:
 ```text
-/path/to/datasets/<dataset>/derivatives/scpp-seg-0.1/sub-XXXX/ses-01/anat/sub-XXXX_ses-01_space-MNI152_desc-seg9_dseg.nii.gz
+/path/to/datasets/<dataset>/derivatives/simcortex-seg-0.1/sub-XXXX/ses-01/anat/sub-XXXX_ses-01_space-MNI152_desc-seg9_dseg.nii.gz
 ```
 Note: for single-dataset inference, dataset.split_file should normally refer to a split CSV for that dataset only.
 
@@ -444,11 +444,11 @@ Use dataset.roots and outputs.out_roots when running inference across multiple d
 simcortex seg infer \
   dataset.split_file=/path/to/datasets/splits/dataset_split.csv \
   dataset.split_name=test \
-  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-preproc-0.1 \
-  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-preproc-0.1 \
+  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-preproc-0.1 \
+  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-preproc-0.1 \
   model.ckpt_path=/path/to/seg_best_dice.pt \
-  outputs.out_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-seg-0.1 \
-  outputs.out_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-seg-0.1
+  outputs.out_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-seg-0.1 \
+  outputs.out_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-seg-0.1
 ```
 
 ### Evaluation
@@ -457,10 +457,10 @@ For one dataset:
 
 ```bash
 simcortex seg eval \
-  dataset.path=/path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
+  dataset.path=/path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
   dataset.split_file=/path/to/datasets/<dataset>/splits/dataset_split.csv \
   dataset.split_name=test \
-  outputs.pred_root=/path/to/datasets/<dataset>/derivatives/scpp-seg-0.1 \
+  outputs.pred_root=/path/to/datasets/<dataset>/derivatives/simcortex-seg-0.1 \
   outputs.eval_csv=/path/to/simcortex-runs/seg/exp01/evals/seg_eval_test.csv \
   outputs.eval_xlsx=/path/to/simcortex-runs/seg/exp01/evals/seg_eval_test.xlsx
 ```
@@ -470,10 +470,10 @@ For multiple datasets:
 simcortex seg eval \
   dataset.split_file=/path/to/datasets/splits/dataset_split.csv \
   dataset.split_name=test \
-  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-preproc-0.1 \
-  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-preproc-0.1 \
-  outputs.pred_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-seg-0.1 \
-  outputs.pred_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-seg-0.1 \
+  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-preproc-0.1 \
+  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-preproc-0.1 \
+  outputs.pred_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-seg-0.1 \
+  outputs.pred_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-seg-0.1 \
   outputs.eval_csv=/path/to/simcortex-runs/seg/exp01/evals/seg_eval_test.csv \
   outputs.eval_xlsx=/path/to/simcortex-runs/seg/exp01/evals/seg_eval_test.xlsx
 ```
@@ -486,14 +486,14 @@ This stage generates initial cortical surfaces from **saved segmentation predict
 
 ### Inputs
 
-- Preprocessing derivatives (`scpp-preproc-*`) for the MNI-aligned T1 image
-- Segmentation derivatives (`scpp-seg-*`) for `..._desc-seg9_dseg.nii.gz`
+- Preprocessing derivatives (`simcortex-preproc-*`) for the MNI-aligned T1 image
+- Segmentation derivatives (`simcortex-seg-*`) for `..._desc-seg9_dseg.nii.gz`
 - split CSV
 
 ### Output layout
 
 ```text
-scpp-initsurf-0.1/
+simcortex-initsurf-0.1/
   dataset_description.json
   sub-XXXX/
     ses-01/
@@ -516,11 +516,11 @@ scpp-initsurf-0.1/
 
 ```bash
 simcortex initsurf generate \
-  dataset.path=/path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
-  dataset.seg_root=/path/to/datasets/<dataset>/derivatives/scpp-seg-0.1 \
+  dataset.path=/path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
+  dataset.seg_root=/path/to/datasets/<dataset>/derivatives/simcortex-seg-0.1 \
   dataset.split_file=/path/to/datasets/<dataset>/splits/dataset_split.csv \
   dataset.split_name=all \
-  outputs.out_root=/path/to/datasets/<dataset>/derivatives/scpp-initsurf-0.1 \
+  outputs.out_root=/path/to/datasets/<dataset>/derivatives/simcortex-initsurf-0.1 \
   outputs.log_dir=/path/to/simcortex-runs/initsurf/exp01/logs_generate
 ```
 
@@ -530,12 +530,12 @@ simcortex initsurf generate \
 simcortex initsurf generate \
   dataset.split_file=/path/to/datasets/splits/dataset_split.csv \
   dataset.split_name=all \
-  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-preproc-0.1 \
-  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-preproc-0.1 \
-  dataset.seg_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-seg-0.1 \
-  dataset.seg_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-seg-0.1 \
-  outputs.out_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-initsurf-0.1 \
-  outputs.out_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-initsurf-0.1 \
+  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-preproc-0.1 \
+  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-preproc-0.1 \
+  dataset.seg_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-seg-0.1 \
+  dataset.seg_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-seg-0.1 \
+  outputs.out_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-initsurf-0.1 \
+  outputs.out_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-initsurf-0.1 \
   outputs.log_dir=/path/to/simcortex-runs/initsurf/exp01/logs_generate
 ```
 
@@ -551,20 +551,20 @@ This stage deforms the InitSurf meshes toward the MNI-aligned FreeSurfer target 
 
 ### Inputs
 
-- Preprocessing derivatives (`scpp-preproc-*`) containing:
+- Preprocessing derivatives (`simcortex-preproc-*`) containing:
   - MNI T1
   - target FreeSurfer surfaces in MNI space
-- InitSurf derivatives (`scpp-initsurf-*`) containing:
+- InitSurf derivatives (`simcortex-initsurf-*`) containing:
   - initial surfaces
   - ribbon probability volumes
 - split CSV
 
 ### Outputs
 
-During **inference**, the stage writes deformed surfaces under `scpp-deform-*`:
+During **inference**, the stage writes deformed surfaces under `simcortex-deform-*`:
 
 ```text
-scpp-deform-0.1/
+simcortex-deform-0.1/
   dataset_description.json
   sub-XXXX/
     ses-01/
@@ -579,8 +579,8 @@ scpp-deform-0.1/
 Use dataset.path and dataset.initsurf_root for one dataset.
 ```bash
 simcortex deform train \
-  dataset.path=/path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
-  dataset.initsurf_root=/path/to/datasets/<dataset>/derivatives/scpp-initsurf-0.1 \
+  dataset.path=/path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
+  dataset.initsurf_root=/path/to/datasets/<dataset>/derivatives/simcortex-initsurf-0.1 \
   dataset.split_file=/path/to/datasets/<dataset>/splits/dataset_split.csv \
   outputs.root=/path/to/simcortex-runs/deform/exp01
 ```
@@ -589,10 +589,10 @@ Use a combined split CSV with a dataset column and provide one preprocessing roo
 ```bash
 simcortex deform train --torchrun --nproc-per-node 2 \
   dataset.split_file=/path/to/datasets/splits/dataset_split.csv \
-  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-preproc-0.1 \
-  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-preproc-0.1 \
-  dataset.initsurf_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-initsurf-0.1 \
-  dataset.initsurf_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-initsurf-0.1 \
+  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-preproc-0.1 \
+  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-preproc-0.1 \
+  dataset.initsurf_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-initsurf-0.1 \
+  dataset.initsurf_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-initsurf-0.1 \
   outputs.root=/path/to/simcortex-runs/deform/exp01_hcpya+oasis1
 ```
 
@@ -602,25 +602,25 @@ For one dataset:
 
 ```bash
 simcortex deform infer \
-  dataset.path=/path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
-  dataset.initsurf_root=/path/to/datasets/<dataset>/derivatives/scpp-initsurf-0.1 \
+  dataset.path=/path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
+  dataset.initsurf_root=/path/to/datasets/<dataset>/derivatives/simcortex-initsurf-0.1 \
   dataset.split_file=/path/to/datasets/<dataset>/splits/dataset_split.csv \
   dataset.split_name=test \
   model.ckpt_path=/path/to/deform_best_rmse.pth \
-  outputs.out_root=/path/to/datasets/<dataset>/derivatives/scpp-deform-0.1
+  outputs.out_root=/path/to/datasets/<dataset>/derivatives/simcortex-deform-0.1
 ```
 For multiple datasets:
 ```bash
 simcortex deform infer \
   dataset.split_file=/path/to/datasets/splits/dataset_split.csv \
   dataset.split_name=test \
-  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-preproc-0.1 \
-  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-preproc-0.1 \
-  dataset.initsurf_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-initsurf-0.1 \
-  dataset.initsurf_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-initsurf-0.1 \
+  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-preproc-0.1 \
+  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-preproc-0.1 \
+  dataset.initsurf_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-initsurf-0.1 \
+  dataset.initsurf_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-initsurf-0.1 \
   model.ckpt_path=/path/to/deform_best_rmse.pth \
-  outputs.out_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-deform-0.1 \
-  outputs.out_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-deform-0.1
+  outputs.out_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-deform-0.1 \
+  outputs.out_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-deform-0.1
 ```
 
 ### Evaluation
@@ -629,10 +629,10 @@ For one dataset:
 
 ```bash
 simcortex deform eval \
-  dataset.path=/path/to/datasets/<dataset>/derivatives/scpp-preproc-0.1 \
+  dataset.path=/path/to/datasets/<dataset>/derivatives/simcortex-preproc-0.1 \
   dataset.split_file=/path/to/datasets/<dataset>/splits/dataset_split.csv \
   dataset.split_name=test \
-  outputs.pred_root=/path/to/datasets/<dataset>/derivatives/scpp-deform-0.1 \
+  outputs.pred_root=/path/to/datasets/<dataset>/derivatives/simcortex-deform-0.1 \
   outputs.out_dir=/path/to/simcortex-runs/deform/exp01/eval_test
 ```
 For multiple datasets:
@@ -640,10 +640,10 @@ For multiple datasets:
 simcortex deform eval \
   dataset.split_file=/path/to/datasets/splits/dataset_split.csv \
   dataset.split_name=test \
-  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-preproc-0.1 \
-  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-preproc-0.1 \
-  outputs.pred_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/scpp-deform-0.1 \
-  outputs.pred_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/scpp-deform-0.1 \
+  dataset.roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-preproc-0.1 \
+  dataset.roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-preproc-0.1 \
+  outputs.pred_roots.HCP_YA=/path/to/datasets/hcpya-u100/derivatives/simcortex-deform-0.1 \
+  outputs.pred_roots.OASIS1=/path/to/datasets/oasis-1/derivatives/simcortex-deform-0.1 \
   outputs.out_dir=/path/to/simcortex-runs/deform/exp01_hcpya+oasis1/eval_test
 ```
 
