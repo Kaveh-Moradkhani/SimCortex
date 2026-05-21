@@ -1,0 +1,84 @@
+# SimCortex segmentation training config
+
+dataset:
+  # Single-dataset mode:
+  #   set path to one derivative root and keep roots as null/empty.
+  # Multi-dataset mode:
+  #   keep path null and define roots below.
+  path: null
+
+  # Combined split CSV. In multi-dataset mode it must contain:
+  #   subject, split, dataset
+  split_file: /project/hippocampus/common/kaveh/workspace/datasets/splits/dataset_split.csv
+
+  roots:
+    HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-preproc-0.2
+    OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-preproc-0.2
+
+  train_split: train
+  val_split: val
+  session_label: "01"
+  space: "MNI152"
+
+  pad_mult: 16
+
+  augment: true
+
+model:
+  in_channels: 1
+  out_channels: 9
+
+  features: [16, 32, 64, 128, 128]
+  norm: instance   
+  dropout: 0.10    
+
+trainer:
+  batch_size: 2
+  num_workers: 4
+
+  device: cuda:0
+  use_ddp: true   
+  data_parallel: false
+
+  seed: 12345
+  deterministic: false
+
+  num_epochs: 1000
+  validation_interval: 5
+
+  optimizer: adamw
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+
+  dice_weight: 1.0
+  dice_exclude_bg: true
+  dice_ignore_absent_target_classes: true
+  ce_class_weights: null
+
+  amp: true
+
+  grad_clip_norm: 1.0
+
+  scheduler:
+    name: cosine
+    eta_min: 1.0e-6
+
+  save_interval: 25
+  keep_last_n_checkpoints: 3
+
+  early_stop_patience: 30
+
+  resume_from: null
+
+outputs:
+  root: /project/hippocampus/common/kaveh/workspace/sc-runs/seg/exp02_hcpya+oasis1
+  log_dir:  ${outputs.root}/logs_train
+  ckpt_dir: ${outputs.root}/checkpoints
+
+
+hydra:
+  run:
+    dir: ${outputs.log_dir}
+  output_subdir: null
+  job:
+    chdir: false

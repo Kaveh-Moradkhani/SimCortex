@@ -1,0 +1,51 @@
+user_config: null
+
+dataset:
+  path: null
+  initsurf_root: null
+  split_file: /project/hippocampus/common/kaveh/workspace/datasets/splits/dataset_split.csv
+  split_name: test
+  session_label: "01"
+  space: "MNI152"
+
+  roots:
+    HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-preproc-0.1
+    OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-preproc-0.1
+
+  initsurf_roots:
+    HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-initsurf-0.1
+    OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-initsurf-0.1
+
+  surface_name: ["lh_pial", "lh_white", "rh_pial", "rh_white"]
+  prob_clip_min: 0.0
+  prob_clip_max: 1.0
+  prob_gamma: 1.0
+  add_prob_grad: false
+
+inference:
+  device: "cuda:0"
+  batch_size: 1
+  num_workers: 2
+  log_level: "INFO"
+  overwrite: true
+
+model:
+  ckpt_path: /project/hippocampus/common/kaveh/workspace/sc-runs/deform/exp13_hcpya+oasis1/checkpoints/deform_best_model.pth
+  strict_load: true
+  c_in: 2
+  sigma: 1
+  n_steps: 8
+  inshape: [184, 224, 184]
+  c_hid: [8, 16, 32, 64, 128, 128]
+  geom_ratio: 0.5
+  geom_depth: 6
+  gn_groups: 8
+  gate_init: -3.0
+
+outputs:
+  out_root: null
+  out_roots:
+    HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-deform-exp13-0.1
+    OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-deform-exp13-0.1
+
+  log_dir: /project/hippocampus/common/kaveh/workspace/sc-runs/deform/exp13_hcpya+oasis1/logs_infer_test
