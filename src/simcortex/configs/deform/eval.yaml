@@ -1,0 +1,35 @@
+user_config: null
+
+dataset:
+  path: null
+  split_file: /project/hippocampus/common/kaveh/workspace/datasets/splits/dataset_split.csv
+  split_name: test
+  session_label: "01"
+  space: "MNI152"
+
+  roots:
+    HCP_YA:  /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-preproc-0.2
+    OASIS1:  /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-preproc-0.2
+
+outputs:
+  pred_root: null
+  pred_roots:
+    HCP_YA:  /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-deform-0.1
+    OASIS1:  /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-deform-0.1
+
+  out_dir: /project/hippocampus/common/kaveh/workspace/sc-runs/deform/exp02_hcpya+oasis1/eval
+
+eval:
+  seed: 1234
+  pred_desc: "deform"    
+  device: "cuda:0"
+  n_chamfer: 150000
+  n_assd_hd: 150000
+  log_level: "INFO"
+
+hydra:
+  run:
+    dir: ${outputs.out_dir}
+  output_subdir: null
+  job:
+    chdir: false

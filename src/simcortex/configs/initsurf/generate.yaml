@@ -1,0 +1,56 @@
+# SimCortex InitSurf generation config
+
+n_workers: 4
+
+dataset:
+  path: null
+  seg_root: null
+
+  split_file: /project/hippocampus/common/kaveh/workspace/datasets/splits/dataset_split.csv
+  split_name: all
+  session_label: "01"
+  space: "MNI152"
+
+  # Multi-dataset mode.
+  roots:
+    HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-preproc-0.2
+    OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-preproc-0.2
+
+  seg_roots:
+    HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-seg-0.2
+    OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-seg-0.2
+
+outputs:
+  out_root: null
+
+  # Multi-dataset mode outputs.
+  out_roots:
+    HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-initsurf-0.2
+    OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-initsurf-0.2
+
+  log_dir: /project/hippocampus/common/kaveh/workspace/sc-runs/initsurf/exp02_hcpya+oasis1/logs_generate
+  dataset_version: "0.2"
+
+params:
+  overwrite: false
+  validate_affine: true
+  affine_atol: 1.0e-4
+  gap_size: 1
+  sdf_sigma: 0.5
+  topo_threshold: 16.0
+  n_smooth: 1
+  wm_start_level: -0.2
+  wm_step: -0.08
+  wm_min_level: -3.0
+  wm_inset: 1.0
+  pial_min_level: 1.8
+  pial_max_level: 2.7
+  pial_grid_step: 0.1
+  pial_absolute_floor: 0.1
+
+hydra:
+  run:
+    dir: ${outputs.log_dir}
+  output_subdir: null
+  job:
+    chdir: false
