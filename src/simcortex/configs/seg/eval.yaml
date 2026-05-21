@@ -32,12 +32,12 @@ outputs:
     HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-seg-0.1
     OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-seg-0.1
 
-  log_dir: /project/hippocampus/common/kaveh/workspace/sc-runs/seg/exp02_hcpya+oasis1/eval/logs_eval_test
-  eval_csv: /project/hippocampus/common/kaveh/workspace/sc-runs/seg/exp02_hcpya+oasis1/eval/metrics_test.csv
-  eval_xlsx: /project/hippocampus/common/kaveh/workspace/sc-runs/seg/exp02_hcpya+oasis1/eval/metrics_test.xlsx
-  failed_csv: /project/hippocampus/common/kaveh/workspace/sc-runs/seg/exp02_hcpya+oasis1/eval/metrics_test_failed.csv
-  summary_csv: /project/hippocampus/common/kaveh/workspace/sc-runs/seg/exp02_hcpya+oasis1/eval/metrics_test_summary_by_dataset.csv
-  summary_json: /project/hippocampus/common/kaveh/workspace/sc-runs/seg/exp02_hcpya+oasis1/eval/metrics_test_summary.json
+  log_dir: /project/hippocampus/common/kaveh/workspace/simcortex-runs/seg/exp02_hcpya+oasis1/eval/logs_eval_test
+  eval_csv: /project/hippocampus/common/kaveh/workspace/simcortex-runs/seg/exp02_hcpya+oasis1/eval/metrics_test.csv
+  eval_xlsx: /project/hippocampus/common/kaveh/workspace/simcortex-runs/seg/exp02_hcpya+oasis1/eval/metrics_test.xlsx
+  failed_csv: /project/hippocampus/common/kaveh/workspace/simcortex-runs/seg/exp02_hcpya+oasis1/eval/metrics_test_failed.csv
+  summary_csv: /project/hippocampus/common/kaveh/workspace/simcortex-runs/seg/exp02_hcpya+oasis1/eval/metrics_test_summary_by_dataset.csv
+  summary_json: /project/hippocampus/common/kaveh/workspace/simcortex-runs/seg/exp02_hcpya+oasis1/eval/metrics_test_summary.json
 
 hydra:
   run:

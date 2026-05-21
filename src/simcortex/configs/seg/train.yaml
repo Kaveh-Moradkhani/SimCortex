@@ -71,7 +71,7 @@ trainer:
   resume_from: null
 
 outputs:
-  root: /project/hippocampus/common/kaveh/workspace/sc-runs/seg/exp02_hcpya+oasis1
+  root: /project/hippocampus/common/kaveh/workspace/simcortex-runs/seg/exp02_hcpya+oasis1
   log_dir:  ${outputs.root}/logs_train
   ckpt_dir: ${outputs.root}/checkpoints
 

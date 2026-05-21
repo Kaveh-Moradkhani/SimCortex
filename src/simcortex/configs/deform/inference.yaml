@@ -30,7 +30,7 @@ inference:
   overwrite: true
 
 model:
-  ckpt_path: /project/hippocampus/common/kaveh/workspace/sc-runs/deform/exp13_hcpya+oasis1/checkpoints/deform_best_model.pth
+  ckpt_path: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp13_hcpya+oasis1/checkpoints/deform_best_model.pth
   strict_load: true
   c_in: 2
   sigma: 1
@@ -48,4 +48,4 @@ outputs:
     HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-deform-exp13-0.1
     OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-deform-exp13-0.1
 
-  log_dir: /project/hippocampus/common/kaveh/workspace/sc-runs/deform/exp13_hcpya+oasis1/logs_infer_test
+  log_dir: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp13_hcpya+oasis1/logs_infer

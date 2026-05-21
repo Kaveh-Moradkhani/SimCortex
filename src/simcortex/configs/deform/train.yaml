@@ -77,7 +77,7 @@ model:
   gate_init: -3.0
 
   # Fine-tune from exp17 collision-aware checkpoint
-  init_ckpt: /project/hippocampus/common/kaveh/workspace/sc-runs/deform/exp17_hcpya+oasis1/checkpoints/deform_best_model.pth
+  init_ckpt: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp17_hcpya+oasis1/checkpoints/deform_best_model.pth
   init_strict: true
 
 objective:
@@ -120,7 +120,7 @@ checkpoint:
   require_collision_for_best: true
 
 outputs:
-  root: /project/hippocampus/common/kaveh/workspace/sc-runs/deform/exp18_hcpya+oasis1
+  root: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp18_hcpya+oasis1
 
 hydra:
   run:
