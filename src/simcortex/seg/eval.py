@@ -354,7 +354,7 @@ def build_eval_datasets(cfg) -> List[Tuple[str, EvalSegDataset]]:
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
-@hydra.main(version_base="1.3", config_path="pkg://simcortexpp.configs.seg", config_name="eval")
+@hydra.main(version_base="1.3", config_path="pkg://simcortex.configs.seg", config_name="eval")
 def main(cfg) -> None:
     log_dir = Path(_as_abs_path(cfg.outputs.log_dir))
     setup_logger(log_dir, "seg_eval.log")

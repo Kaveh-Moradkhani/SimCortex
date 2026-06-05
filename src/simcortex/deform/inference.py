@@ -237,11 +237,6 @@ def main(cfg: DictConfig):
     if unknown_surfs:
         raise KeyError(f"Unknown surface names: {unknown_surfs}. Supported: {list(_SURF_MAP.keys())}")
 
-    # add_prob_grad forced if c_in==3
-    add_prob_grad = bool(getattr(cfg.dataset, "add_prob_grad", False))
-    if int(cfg.model.c_in) == 3:
-        add_prob_grad = True
-
     device_str = str(getattr(cfg.inference, "device", "cuda:0"))
     device = torch.device(device_str if (("cuda" not in device_str) or torch.cuda.is_available()) else "cpu")
 
@@ -271,7 +266,6 @@ def main(cfg: DictConfig):
         C_in=int(cfg.model.c_in),
         inshape=list(cfg.model.inshape),
         sigma=float(cfg.model.sigma),
-        device=device,
         geom_ratio=float(getattr(cfg.model, "geom_ratio", 0.5)),
         geom_depth=int(getattr(cfg.model, "geom_depth", 6)),
         gn_groups=int(getattr(cfg.model, "gn_groups", 8)),
@@ -306,7 +300,6 @@ def main(cfg: DictConfig):
             prob_clip_min=float(cfg.dataset.prob_clip_min),
             prob_clip_max=float(cfg.dataset.prob_clip_max),
             prob_gamma=float(cfg.dataset.prob_gamma),
-            add_prob_grad=add_prob_grad,
         )
 
         loader = DataLoader(
@@ -389,7 +382,6 @@ def main(cfg: DictConfig):
                 prob_clip_min=float(cfg.dataset.prob_clip_min),
                 prob_clip_max=float(cfg.dataset.prob_clip_max),
                 prob_gamma=float(cfg.dataset.prob_gamma),
-                add_prob_grad=add_prob_grad,
             )
 
             loader = DataLoader(

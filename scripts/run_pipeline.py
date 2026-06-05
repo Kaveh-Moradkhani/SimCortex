@@ -281,6 +281,8 @@ def run_preprocessing_mri_only(sub: SubjectInput, layout: SubjectLayout, cfg: Pi
         cfg.mni,
         "--transform-type",
         cfg.transform_type,
+        "--derivative-name",
+        layout.preproc_root.name,
     ]
     elapsed = run_cmd("preproc", cmd, layout.log_dir / "preproc.log", cfg.project_root, cfg)
 

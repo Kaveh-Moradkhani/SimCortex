@@ -64,7 +64,7 @@ simcortex deform --help
 - MONAI
 - `nibabel`, `numpy`, `scipy`, `scikit-image`
 - `pandas`, `openpyxl`
-- `trimesh`, `tqdm`
+- `trimesh`, `tqdm`, `python-fcl`
 - `hydra-core`, `omegaconf`, `typer`
 
 ### Optional / stage-specific dependencies

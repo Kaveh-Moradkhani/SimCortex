@@ -1,15 +1,11 @@
 user_config: null
 
 dataset:
-  path: null
-  initsurf_root: null
-
   split_file: /project/hippocampus/common/kaveh/workspace/datasets/splits/dataset_split.csv
   train_split_name: train
   val_split_name: val
-
-  session_label: "01"
-  space: "MNI152"
+  session_label: '01'
+  space: MNI152
 
   roots:
     HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-preproc-0.2
@@ -19,112 +15,125 @@ dataset:
     HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-initsurf-0.2
     OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-initsurf-0.2
 
-  surface_name: ["lh_pial", "lh_white", "rh_pial", "rh_white"]
+  surface_name: [lh_pial, lh_white, rh_pial, rh_white]
 
   prob_clip_min: 0.0
   prob_clip_max: 1.0
   prob_gamma: 1.0
 
-  # Fine-tune: lower than exp17's 0.2
-  aug_prob: 0.08
-  aug_rot_range_deg: 1.5
-  aug_scale_range: 0.005
-  aug_trans_range_mm: 0.25
+  # Final exp23-style spatial augmentation
+  aug_prob: 0.30
+  aug_rot_range_deg: 3.0
+  aug_scale_range: 0.02
+  aug_trans_range_mm: 1.0
+
+  # Keep intensity augmentation OFF for the final recipe.
+  # exp24 is still too early and currently slower than exp22/23.
+  aug_intensity_prob: 0.0
+  aug_bias_strength: 0.0
+  aug_gain_range: 0.0
+  aug_bright_range: 0.0
+  aug_noise_std: 0.0
 
 trainer:
-  seed: 2026
+  seed: 2025
   img_batch_size: 1
   grad_accum_steps: 4
 
-  # Fine-tune, not full from-scratch
-  num_epochs: 120
+  # Exp23-style high cap; early stopping should decide.
+  num_epochs: 450
+
   validation_interval: 5
   collision_interval: 5
 
-  learning_rate: 2.0e-5
-  weight_decay: 5.0e-5
+  # Final from-scratch LR based on exp23.
+  learning_rate: 8.0e-5
+  weight_decay: 1.0e-4
 
-  points_per_image: 150000
-  val_points_per_image: 100000
+  points_per_image: 180000
+  val_points_per_image: 150000
+
   num_workers: 4
   log_level: INFO
   mesh_chunk: 4
+
   grad_clip_norm: 1.0
 
-  scheduler_patience: 2
+  scheduler_patience: 4
   scheduler_factor: 0.5
-  scheduler_min_lr: 5.0e-7
-  scheduler_threshold_mm: 0.0005
+  scheduler_min_lr: 1.0e-6
+  scheduler_threshold_mm: 0.0004
   scheduler_threshold_mode: abs
   scheduler_cooldown: 1
 
-  early_stop_patience: 8
+  # Keep generous patience; late RMSE gains are real in exp22/23.
+  early_stop_patience: 15
   early_stop_min_delta_mm: 0.0003
 
-  # Do not use resume_from for exp18
   resume_from: null
 
 model:
   sigma: 1
   n_steps: 8
   inshape: [184, 224, 184]
-  c_hid: [8, 16, 32, 64, 128, 128]
+
+  # Final exp23-style wider model.
+  c_hid: [12, 24, 64, 128, 192, 192]
 
   c_in: 2
   geom_ratio: 0.5
   geom_depth: 6
   gn_groups: 8
+
+  # Use stable gated fusion; -3 is conservative and okay.
   gate_init: -3.0
 
-  # Fine-tune from exp17 collision-aware checkpoint
-  init_ckpt: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp17_hcpya+oasis1/checkpoints/deform_best_model.pth
+  # Do not use dropout in the final from-scratch recipe yet.
+  dropout: 0.0
+
+  init_ckpt: null
   init_strict: true
 
 objective:
   chamfer_weight: 1.0
   chamfer_scale: 1.0
-  edge_loss_weight: 0.3
-  normal_weight: 0.3
 
-  # No long warmup needed because we start from trained model
-  reg_warmup_epochs: 5
+  edge_loss_weight: 0.25
+  normal_weight: 0.25
 
-  hd_weight: 6.0
+  reg_warmup_epochs: 30
+
+  # White-pial HD: guardrail only.
+  hd_weight: 5.5
   hd_p: 0.05
-  hd_lambda_mm: 0.65
-  hd_points: 30000
+  hd_lambda_mm: 0.75
+  hd_points: 50000
 
-  # Slightly stronger than exp17 to preserve WP safety
-  signed_nested_weight: 14.0
-  signed_margin_mm: 0.65
+  # Signed-nested: main topology constraint.
+  signed_nested_weight: 12.0
+  signed_margin_mm: 0.55
   signed_points: 50000
 
-  # Main change: make pial-LR penalty more relevant.
-  # exp17 showed PialLR can explode late, so this must be stronger.
-  pial_lr_hd_weight: 2.0
-  pial_lr_hd_p: 0.02
-  pial_lr_hd_lambda_mm: 1.5
-  pial_lr_hd_points: 50000
+  # Pial L/R guardrail: exp23-style stronger setting.
+  pial_lr_hd_weight: 1.5
+  pial_lr_hd_p: 0.05
+  pial_lr_hd_lambda_mm: 1.0
+  pial_lr_hd_points: 30000
 
-  # Slightly stronger folding control than exp17
-  jacobian_weight: 0.15
+  # Jacobian: secondary insurance.
+  jacobian_weight: 0.1
   jacobian_margin: 0.1
-  jacobian_topk_frac: 0.001
+  jacobian_topk_frac: 0.0005
 
 checkpoint:
-  # Stronger pial-LR selection pressure than exp17.
-  alpha_wp: 0.10
-  alpha_lr: 0.05
-  rmse_guardrail_rel: 1.025
+  # Restore exp23-style collision-aware selection.
+  # Do not use exp24's weaker alpha values for the final recipe.
+  alpha_wp: 0.08
+  alpha_lr: 0.035
+
+  rmse_guardrail_rel: 1.03
   min_delta_score: 0.0001
   require_collision_for_best: true
 
 outputs:
-  root: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp18_hcpya+oasis1
-
-hydra:
-  run:
-    dir: ${outputs.root}
-  output_subdir: null
-  job:
-    chdir: false
+  root: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp25_hcpya+oasis1

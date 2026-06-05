@@ -576,6 +576,77 @@ def apply_aug(vol, padded_init_ijk, lengths, gt_verts_dict_list, affines, cfg, s
     return vol, padded_init_ijk, gt_verts_dict_list
 
 
+def apply_intensity_aug(vol, cfg):
+    """
+    MRI-appearance augmentation applied ONLY to the MRI channel (vol[:, 0:1]).
+    The geometry/probability channel(s) (vol[:, 1:]) are left untouched.
+
+    All operations are safe on z-score-normalized MRI (values ~N(0,1), may be
+    negative). This is the main regularizer for closing the train/val gap, since
+    the affine aug in apply_aug() never perturbs intensity/appearance.
+
+    Config (under cfg.dataset, all default to 0 = disabled):
+      aug_intensity_prob : per-sample probability of applying intensity aug
+      aug_bias_strength  : std of the smooth multiplicative bias field (e.g. 0.3)
+      aug_gain_range     : +/- multiplicative contrast gain (e.g. 0.1 -> x*[0.9,1.1])
+      aug_bright_range   : +/- additive brightness shift in z-units (e.g. 0.1)
+      aug_noise_std      : std of additive Gaussian noise in z-units (e.g. 0.05)
+    """
+    prob = float(getattr(cfg.dataset, "aug_intensity_prob", 0.0))
+    if prob <= 0.0:
+        return vol
+
+    B, C, D, H, W = vol.shape
+    device = vol.device
+    dtype = vol.dtype
+
+    mask = (torch.rand(B, device=device) < prob)
+    if mask.sum().item() == 0:
+        return vol
+
+    bias_strength = float(getattr(cfg.dataset, "aug_bias_strength", 0.0))
+    gain_range    = float(getattr(cfg.dataset, "aug_gain_range", 0.0))
+    bright_range  = float(getattr(cfg.dataset, "aug_bright_range", 0.0))
+    noise_std     = float(getattr(cfg.dataset, "aug_noise_std", 0.0))
+
+    mri = vol[:, 0:1].clone()  # (B,1,D,H,W)
+
+    for i in range(B):
+        if not mask[i].item():
+            continue
+
+        x = mri[i:i + 1]  # (1,1,D,H,W)
+
+        # 1) smooth multiplicative bias field (low-frequency -> upsampled -> exp)
+        if bias_strength > 0.0:
+            lo = torch.randn(1, 1, 4, 5, 4, device=device, dtype=dtype) * bias_strength
+            field = F.interpolate(lo, size=(D, H, W), mode="trilinear", align_corners=True)
+            x = x * torch.exp(field)
+
+        # 2) global contrast gain
+        if gain_range > 0.0:
+            g = 1.0 + (torch.rand(1, device=device, dtype=dtype) * 2 - 1) * gain_range
+            x = x * g
+
+        # 3) global brightness shift
+        if bright_range > 0.0:
+            b = (torch.rand(1, device=device, dtype=dtype) * 2 - 1) * bright_range
+            x = x + b
+
+        # 4) additive Gaussian noise
+        if noise_std > 0.0:
+            x = x + torch.randn_like(x) * noise_std
+
+        mri[i:i + 1] = x
+
+    if C > 1:
+        vol = torch.cat([mri, vol[:, 1:]], dim=1)
+    else:
+        vol = mri
+
+    return vol
+
+
 # -----------------------
 # Utilities for building padded init verts
 # -----------------------
@@ -890,6 +961,7 @@ def main(cfg: DictConfig):
             geom_depth=int(getattr(cfg.model, "geom_depth", 4)),
             gn_groups=int(getattr(cfg.model, "gn_groups", 8)),
             gate_init=float(getattr(cfg.model, "gate_init", -3.0)),
+            dropout=float(getattr(cfg.model, "dropout", 0.0)),
         ).to(device)
 
         # optional initialization checkpoint: model-only or full checkpoint are both supported.
@@ -934,10 +1006,27 @@ def main(cfg: DictConfig):
         tb_writer = None
         if rank == 0:
             os.makedirs(out_root, exist_ok=True)
+
+            log_path = os.path.join(out_root, "train.log")
+            root_logger = logging.getLogger()
+            root_logger.setLevel(level)
+
+            for h in list(root_logger.handlers):
+                if isinstance(h, logging.FileHandler):
+                    root_logger.removeHandler(h)
+
+            file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+            file_handler.setLevel(level)
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+            )
+            root_logger.addHandler(file_handler)
+
             tb_dir = os.path.join(out_root, "tb_logs")
             os.makedirs(tb_dir, exist_ok=True)
 
             log.info("TensorBoard logging to %s", tb_dir)
+            log.info("Log file writing to %s", log_path)
 
             resolved_conf_yaml = OmegaConf.to_yaml(cfg, resolve=True)
             config_path = os.path.join(out_root, "config_resolved.yaml")
@@ -945,6 +1034,7 @@ def main(cfg: DictConfig):
                 f.write(resolved_conf_yaml)
             log.info("Resolved config saved to %s", config_path)
 
+            file_handler.flush()
             tb_writer = SummaryWriter(tb_dir)
             formatted_config = resolved_conf_yaml.replace("\n", "  \n")
             tb_writer.add_text(
@@ -1023,6 +1113,7 @@ def main(cfg: DictConfig):
         best_model_epoch = -1
 
         no_improve = 0
+        no_improve_rmse = 0
         early_patience = int(getattr(cfg.trainer, "early_stop_patience", 0))
         # RMSE delta is used only for diagnostic best-rmse checkpoint.
         early_rmse_delta = float(getattr(cfg.trainer, "early_stop_min_delta_mm", 0.0))
@@ -1149,10 +1240,27 @@ def main(cfg: DictConfig):
                     surface_names=surface_names,
                 )
 
+                # MRI-appearance augmentation (intensity/bias/noise), MRI channel only
+                vol = apply_intensity_aug(vol, cfg)
 
-                # forward
-                pred_vox, aux = model(padded_init, vol, int(cfg.model.n_steps), return_aux=True)
 
+                need_phis = (jac_w_eff > 0.0)
+
+                if need_phis:
+                    pred_vox, aux = model(
+                        padded_init,
+                        vol,
+                        int(cfg.model.n_steps),
+                        return_phis=True,
+                    )
+                else:
+                    pred_vox = model(
+                        padded_init,
+                        vol,
+                        int(cfg.model.n_steps),
+                        return_phis=False,
+                    )
+                    aux = None
 
                 loss_jac = torch.zeros((), device=device)
                 jac_neg_pct = 0.0
@@ -1161,9 +1269,11 @@ def main(cfg: DictConfig):
                 jac_p01 = 0.0
                 jac_p1 = 0.0
 
-                if jac_w_eff > 0.0:
+                if need_phis:
                     loss_jac, jac_neg_pct, jac_min_det, jac_p001, jac_p01, jac_p1 = folding_penalty_from_phis(
-                        aux["phis"], margin=jac_margin, topk_frac=jac_topk_frac
+                        aux["phis"],
+                        margin=jac_margin,
+                        topk_frac=jac_topk_frac,
                     )
 
                 if jac_w_eff > 0.0:
@@ -1801,6 +1911,7 @@ def main(cfg: DictConfig):
                         if rmse_mm < (best_rmse_seen - early_rmse_delta):
                             best_rmse_seen = rmse_mm
                             best_rmse_epoch = epoch
+                            no_improve_rmse = 0
                             ckpt_rmse = os.path.join(out_root, "checkpoints", "deform_best_rmse.pth")
                             ckpt_rmse_full = os.path.join(out_root, "checkpoints", "deform_best_rmse_full.pth")
 
@@ -1823,6 +1934,8 @@ def main(cfg: DictConfig):
                                 "🌟 Best RMSE checkpoint updated at epoch %d | RMSE=%.4f mm -> %s",
                                 epoch, rmse_mm, ckpt_rmse,
                             )
+                        else:
+                            no_improve_rmse += 1
 
                         reasonable = rmse_mm <= best_rmse_seen * rmse_guardrail_rel
                         ckpt_model = os.path.join(out_root, "checkpoints", "deform_best_model.pth")
@@ -1907,12 +2020,18 @@ def main(cfg: DictConfig):
                                         "BestScore=%.4f | BestModelEpoch=%d | no_improve=%d",
                                         epoch, rmse_mm, best_score, best_model_epoch, no_improve,
                                     )
-                        # Early stopping follows the same criterion as final model selection.
-                        if early_patience > 0 and no_improve >= early_patience:
+                        # Early stopping follows the RMSE plateau (decoupled from the
+                        # collision-aware score). The score still selects best_model, but
+                        # training continues as long as val RMSE keeps improving, so a noisy
+                        # WP/LR score (single-subject quantization) can no longer cut training
+                        # short while accuracy is still improving.
+                        if early_patience > 0 and no_improve_rmse >= early_patience:
                             log.info(
-                                "🛑 Early stopping after %d score-validation checks without improvement. "
-                                "BestScore=%.4f at epoch %d | BestRMSE=%.4f at epoch %d",
+                                "🛑 Early stopping after %d validation checks without RMSE improvement. "
+                                "BestScore=%.4f at epoch %d | BestRMSE=%.4f at epoch %d | "
+                                "no_improve(score)=%d no_improve(rmse)=%d",
                                 early_patience, best_score, best_model_epoch, best_rmse_seen, best_rmse_epoch,
+                                no_improve, no_improve_rmse,
                             )
                             stop_tensor.fill_(1)
 

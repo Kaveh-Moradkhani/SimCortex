@@ -423,7 +423,7 @@ def _item_from_batch(x: Any, idx: int) -> Any:
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
-@hydra.main(version_base="1.3", config_path="pkg://simcortexpp.configs.seg", config_name="inference")
+@hydra.main(version_base="1.3", config_path="pkg://simcortex.configs.seg", config_name="inference")
 def main(cfg: DictConfig) -> None:
     setup_logger(OmegaConf.select(cfg, "outputs.log_dir"), "inference.log")
     logging.info("=== Segmentation inference config ===")
@@ -441,7 +441,7 @@ def main(cfg: DictConfig) -> None:
     space = str(OmegaConf.select(cfg, "dataset.space", default="MNI152"))
 
     # Prepare BIDS derivative descriptions.
-    version = _get_pkg_version("simcortexpp")
+    version = _get_pkg_version("simcortex")
     if roots_map is not None:
         for ds_name in roots_map.keys():
             out_root = _resolve_out_root(cfg, ds_name)

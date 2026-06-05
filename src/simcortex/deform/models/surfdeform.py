@@ -5,9 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# -------------------------
-# Utils blocks (small-batch friendly)
-# -------------------------
+
+
+
 class ConvGNAct(nn.Module):
     """
     Conv3D + GroupNorm + LeakyReLU (+ optional Dropout3D)
@@ -47,24 +47,39 @@ class ResBlock3D(nn.Module):
 
 
 class GaussianFilter(nn.Module):
-    """
-    Smooth stationary velocity fields (SVFs) before scaling-and-squaring integration.
-    """
-    def __init__(self, C=3, K=3, sigma=0.5):
+
+    def __init__(
+        self,
+        C: int = 3,
+        sigma: float = 1.0,
+        truncate: float = 2.0,
+        padding_mode: str = "replicate",
+    ):
         super().__init__()
-        grids = torch.meshgrid([torch.linspace(-(K - 1) / 2, (K - 1) / 2, K)] * 3, indexing="ij")
-        kernel = 1.0
-        for g in grids:
-            kernel *= (1.0 / (sigma * math.sqrt(2 * math.pi))) * torch.exp(-((g / sigma) ** 2) / 2.0)
+        if sigma <= 0:
+            raise ValueError(f"sigma must be > 0, got {sigma}")
+
+        self.C = int(C)
+        self.sigma = float(sigma)
+        self.truncate = float(truncate)
+        self.padding_mode = str(padding_mode)
+
+        radius = max(1, int(math.ceil(self.truncate * self.sigma)))
+        coords = torch.arange(-radius, radius + 1, dtype=torch.float32)
+        zz, yy, xx = torch.meshgrid(coords, coords, coords, indexing="ij")
+
+        kernel = torch.exp(
+            -(xx * xx + yy * yy + zz * zz) / (2.0 * self.sigma * self.sigma)
+        )
         kernel = kernel / kernel.sum()
-        kernel = kernel[None, None].repeat(C, 1, 1, 1, 1)  # (C,1,K,K,K)
+        kernel = kernel[None, None].repeat(self.C, 1, 1, 1, 1)
+
         self.register_buffer("kernel", kernel)
-        self.K = K
-        self.C = C
+        self.radius = radius
 
-    def forward(self, x):
-        return F.conv3d(x, weight=self.kernel, padding=self.K // 2, groups=self.C)
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.pad(x, (self.radius,) * 6, mode=self.padding_mode)
+        return F.conv3d(x, weight=self.kernel, padding=0, groups=self.C)
 
 class GeomInject(nn.Module):
     """
@@ -104,10 +119,12 @@ class DualMUNetV2(nn.Module):
         K: int = 3,
         gn_groups: int = 8,
         gate_init: float = -3.0,
+        dropout: float = 0.0,
     ):
         super().__init__()
         assert C_in >= 2, "Need MRI + at least 1 geom/prob channel"
         geom_depth = int(max(1, min(6, geom_depth)))
+        dropout = float(dropout)
 
         # MRI channels
         Cm = list(C_hid)
@@ -120,9 +137,9 @@ class DualMUNetV2(nn.Module):
         self.m1 = nn.Sequential(ConvGNAct(1,   Cm[0], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[0], k=K, groups=gn_groups))
         self.m2 = nn.Sequential(ConvGNAct(Cm[0], Cm[1], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[1], k=K, groups=gn_groups))
         self.m3 = nn.Sequential(ConvGNAct(Cm[1], Cm[2], k=K, s=2, groups=gn_groups), ResBlock3D(Cm[2], k=K, groups=gn_groups))  # /2
-        self.m4 = nn.Sequential(ConvGNAct(Cm[2], Cm[3], k=K, s=2, groups=gn_groups), ResBlock3D(Cm[3], k=K, groups=gn_groups))  # /4
-        self.m5 = nn.Sequential(ConvGNAct(Cm[3], Cm[4], k=K, s=2, groups=gn_groups), ResBlock3D(Cm[4], k=K, groups=gn_groups))  # /8
-        self.m6 = nn.Sequential(ConvGNAct(Cm[4], Cm[5], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[5], k=K, groups=gn_groups))
+        self.m4 = nn.Sequential(ConvGNAct(Cm[2], Cm[3], k=K, s=2, groups=gn_groups), ResBlock3D(Cm[3], k=K, groups=gn_groups, dropout=dropout))  # /4
+        self.m5 = nn.Sequential(ConvGNAct(Cm[3], Cm[4], k=K, s=2, groups=gn_groups), ResBlock3D(Cm[4], k=K, groups=gn_groups, dropout=dropout))  # /8
+        self.m6 = nn.Sequential(ConvGNAct(Cm[4], Cm[5], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[5], k=K, groups=gn_groups, dropout=dropout))
 
         # ---- Geom encoder (up to geom_depth stages learned) ----
         # stage 1 is always learned
@@ -163,8 +180,8 @@ class DualMUNetV2(nn.Module):
         # ---- Decoder (uses fused skips) ----
         self.up = nn.Upsample(scale_factor=2, mode="trilinear", align_corners=True)
 
-        self.d5 = nn.Sequential(ConvGNAct(Cm[5] + Cm[4], Cm[4], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[4], k=K, groups=gn_groups))
-        self.d4 = nn.Sequential(ConvGNAct(Cm[4] + Cm[3], Cm[3], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[3], k=K, groups=gn_groups))
+        self.d5 = nn.Sequential(ConvGNAct(Cm[5] + Cm[4], Cm[4], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[4], k=K, groups=gn_groups, dropout=dropout))
+        self.d4 = nn.Sequential(ConvGNAct(Cm[4] + Cm[3], Cm[3], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[3], k=K, groups=gn_groups, dropout=dropout))
         self.d3 = nn.Sequential(ConvGNAct(Cm[3] + Cm[2], Cm[2], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[2], k=K, groups=gn_groups))
         self.d2 = nn.Sequential(ConvGNAct(Cm[2] + Cm[1], Cm[1], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[1], k=K, groups=gn_groups))
         self.d1 = nn.Sequential(ConvGNAct(Cm[1] + Cm[0], Cm[0], k=K, s=1, groups=gn_groups), ResBlock3D(Cm[0], k=K, groups=gn_groups))
@@ -274,6 +291,7 @@ class SurfDeform(nn.Module):
         geom_depth=4,
         gn_groups=8,
         gate_init =-3.0,
+        dropout=0.0,
     ):
         super().__init__()
         self.inshape = tuple(inshape)
@@ -293,75 +311,107 @@ class SurfDeform(nn.Module):
             geom_depth=geom_depth,
             gn_groups=gn_groups,
             gate_init=gate_init,
+            dropout=dropout,
         )
 
         D, H, W = self.inshape
 
-        # fixed buffers (no reassignment in forward)
-        self.register_buffer("scale", torch.tensor([D, H, W], dtype=torch.float32))
+
         grid = torch.stack(
             torch.meshgrid(
                 torch.arange(D), torch.arange(H), torch.arange(W), indexing="ij"
             )
         )[None].float()  # (1,3,D,H,W)
-        self.register_buffer("grid", grid)
 
-        self.gaussian = GaussianFilter(C=3, K=3, sigma=sigma)
+        self.gaussian = GaussianFilter(
+            C=3,
+            sigma=sigma,
+            truncate=2.0,
+            padding_mode="replicate",
+        )
+        self._grid_cache = {}
 
-    def forward(self, vert: torch.Tensor, vol: torch.Tensor, n_steps: int, return_aux: bool = False):
-        D, H, W = vol.shape[2:]
-        if (D, H, W) != self.inshape:
-            raise ValueError(f"Input vol shape {(D,H,W)} != inshape {self.inshape}. Fix padding/inshape.")
+    def forward(
+        self,
+        vert: torch.Tensor,
+        vol: torch.Tensor,
+        n_steps: int,
+        return_phis: bool = False,
+    ):
+        if tuple(vol.shape[2:]) != self.inshape:
+            raise ValueError(f"Input vol shape {tuple(vol.shape[2:])} != inshape {self.inshape}")
 
         svfs = self.munet(vol)
+        phis = [] if return_phis else None
 
-        phis = []
-        svfs_smooth = []
-
-        for idx, svf in enumerate(svfs):
+        for svf in svfs:
             svf = self.gaussian(svf)
             phi = self.integrate(svf, n_steps)
 
-            svfs_smooth.append(svf)
-            phis.append(phi)
+            if return_phis:
+                phis.append(phi)
 
-            coord = vert[:, :, None, None].clone()
-            deform = self.interpolate(coord, phi)
-            deform = deform[..., 0, 0].permute(0, 2, 1)
+            deform = self.interpolate(
+                vert[:, :, None, None],
+                phi,
+            )[..., 0, 0].permute(0, 2, 1)
 
             vert = vert + deform
 
-        if return_aux:
-            return vert, {"svfs": svfs_smooth, "phis": phis}
+        if return_phis:
+            return vert, {"phis": phis}
 
         return vert
 
-    def integrate(self, svf, n_steps=7):
-        # scaling and squaring
-        flow = svf / (2 ** n_steps)
+
+    def _get_base_grid(self, shape, ref: torch.Tensor) -> torch.Tensor:
+        D, H, W = [int(v) for v in shape]
+        key = (D, H, W, ref.device.type, ref.device.index, ref.dtype)
+
+        grid = self._grid_cache.get(key, None)
+        if grid is None:
+            zz, yy, xx = torch.meshgrid(
+                torch.arange(D, device=ref.device, dtype=ref.dtype),
+                torch.arange(H, device=ref.device, dtype=ref.dtype),
+                torch.arange(W, device=ref.device, dtype=ref.dtype),
+                indexing="ij",
+            )
+            grid = torch.stack((zz, yy, xx), dim=0)[None]  # (1,3,D,H,W), IJK/DHW
+            self._grid_cache[key] = grid
+
+        return grid
+
+
+    def transform(self, src: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
+        base = self._get_base_grid(flow.shape[2:], flow)
+        coord = (base + flow).permute(0, 2, 3, 4, 1)  # (B,D,H,W,3), IJK
+        return self.interpolate(coord, src)
+
+
+    def integrate(self, svf: torch.Tensor, n_steps: int = 7) -> torch.Tensor:
+        flow = svf / float(2 ** n_steps)
         for _ in range(n_steps):
             flow = flow + self.transform(flow, flow)
         return flow
 
-    def transform(self, src, flow):
-        coord = self.grid.to(flow.device) + flow
-        coord = coord.permute(0, 2, 3, 4, 1)  # (B,D,H,W,3)
-        return self.interpolate(coord, src)
+    def interpolate(self, coord_ijk: torch.Tensor, src: torch.Tensor) -> torch.Tensor:
+        """
+        coord_ijk: (..., 3) in IJK / DHW voxel coordinates of src
+        src: (B, C, D, H, W)
+        """
+        D, H, W = src.shape[2:]
 
-    def interpolate(self, coord, src):
-        # align_corners=True => normalize by (size-1)
-        scale = self.scale.to(coord.device)
-        coord = coord.clone()
-        coord[..., 0] = 2.0 * coord[..., 0] / (scale[0] - 1.0) - 1.0  # D
-        coord[..., 1] = 2.0 * coord[..., 1] / (scale[1] - 1.0) - 1.0  # H
-        coord[..., 2] = 2.0 * coord[..., 2] / (scale[2] - 1.0) - 1.0  # W
+        d = 2.0 * coord_ijk[..., 0] / max(D - 1, 1) - 1.0
+        h = 2.0 * coord_ijk[..., 1] / max(H - 1, 1) - 1.0
+        w = 2.0 * coord_ijk[..., 2] / max(W - 1, 1) - 1.0
 
-        # grid_sample expects (x,y,z)=(W,H,D) => flip ijk -> kji
-        coord = coord.flip(-1)
+        # grid_sample expects XYZ = WHD for 5D input
+        grid_xyz = torch.stack((w, h, d), dim=-1)
 
         return F.grid_sample(
-            src, coord.to(src.device),
+            src,
+            grid_xyz,
             mode="bilinear",
             padding_mode="border",
-            align_corners=True
+            align_corners=True,
         )

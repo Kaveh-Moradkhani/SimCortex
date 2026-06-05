@@ -209,9 +209,6 @@ class CSRDeformDataset(Dataset):
         mri, affine = read_nii(mri_path)
         prob, prob_affine = read_nii(prob_path)
 
-        if prob.shape != mri.shape:
-            raise ValueError(...)
-
         if not np.allclose(prob_affine, affine, atol=1e-4):
             raise ValueError(
                 f"PROB/MRI affine mismatch for {subj}: "
