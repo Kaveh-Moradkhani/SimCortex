@@ -133,6 +133,67 @@ def signed_nested_surface_penalty(
     return loss, bad_white_pct, bad_pial_pct, mean_signed_w, mean_signed_p
 
 
+def signed_pial_lr_penalty(
+    lh_pial_v: torch.Tensor,
+    lh_pial_f: torch.Tensor,
+    rh_pial_v: torch.Tensor,
+    rh_pial_f: torch.Tensor,
+    margin_mm: float = 0.5,
+    n_points: int = 40000,
+):
+    """
+    Signed non-penetration penalty between the LEFT and RIGHT pial surfaces.
+
+    Unlike white/pial, there is no nesting relationship here: the two hemispheres
+    sit side by side across the interhemispheric fissure and must NOT interpenetrate.
+    We penalize each pial surface for crossing to the INSIDE of the other, using the
+    same nearest-vertex-normal signed-distance approximation as
+    signed_nested_surface_penalty (outward normals => outside is positive).
+
+    For BOTH directions the surface should stay OUTSIDE the other:
+        signed >= +margin  -> outside / well separated -> penalty 0
+        signed <  +margin  -> close or interpenetrating -> penalized
+
+    This is the L/R analogue of the "pial-outside-white" branch, applied symmetrically.
+    It provides an actual signed gradient against interpenetration, unlike the
+    quantile-distance pial_lr guardrail (partial_hd_penalty), which only enforces a
+    tail separation and is what allowed the late-training L/R drift.
+
+    WARNING: same nearest-vertex-normal sign approximation caveat as
+    signed_nested_surface_penalty applies near high-curvature / midline regions.
+    """
+    mesh_l = Meshes(verts=[lh_pial_v], faces=[lh_pial_f])
+    mesh_r = Meshes(verts=[rh_pial_v], faces=[rh_pial_f])
+
+    l_pts = sample_points_from_meshes(mesh_l, num_samples=n_points).squeeze(0)
+    r_pts = sample_points_from_meshes(mesh_r, num_samples=n_points).squeeze(0)
+
+    l_normals = vertex_normals_from_mesh(lh_pial_v, lh_pial_f)
+    r_normals = vertex_normals_from_mesh(rh_pial_v, rh_pial_f)
+
+    # left-pial samples relative to right-pial: should be OUTSIDE right-pial
+    knn_lr = knn_points(l_pts[None], rh_pial_v[None], K=1, return_nn=False)
+    idx_r = knn_lr.idx[0, :, 0]
+    signed_lr = ((l_pts - rh_pial_v[idx_r]) * r_normals[idx_r]).sum(dim=-1)
+    loss_lr = F.relu(margin_mm - signed_lr).mean()
+
+    # right-pial samples relative to left-pial: should be OUTSIDE left-pial
+    knn_rl = knn_points(r_pts[None], lh_pial_v[None], K=1, return_nn=False)
+    idx_l = knn_rl.idx[0, :, 0]
+    signed_rl = ((r_pts - lh_pial_v[idx_l]) * l_normals[idx_l]).sum(dim=-1)
+    loss_rl = F.relu(margin_mm - signed_rl).mean()
+
+    loss = 0.5 * (loss_lr + loss_rl)
+
+    with torch.no_grad():
+        bad_lr_pct = (signed_lr < margin_mm).float().mean().item() * 100.0
+        bad_rl_pct = (signed_rl < margin_mm).float().mean().item() * 100.0
+        mean_signed_lr = signed_lr.mean().item()
+        mean_signed_rl = signed_rl.mean().item()
+
+    return loss, bad_lr_pct, bad_rl_pct, mean_signed_lr, mean_signed_rl
+
+
 def jacobian_det_3d(phi: torch.Tensor):
     """
     phi: (B, 3, D, H, W), displacement field in voxel coordinates.
@@ -1169,6 +1230,11 @@ def main(cfg: DictConfig):
         signed_margin = float(getattr(cfg.objective, "signed_margin_mm", 0.5))
         signed_points = int(getattr(cfg.objective, "signed_points", 40000))
 
+        # Signed pial-LR non-penetration loss (L/R analogue of the signed nested loss)
+        signed_pial_lr_w_base = float(getattr(cfg.objective, "signed_pial_lr_weight", 0.0))
+        signed_pial_lr_margin = float(getattr(cfg.objective, "signed_pial_lr_margin_mm", signed_margin))
+        signed_pial_lr_points = int(getattr(cfg.objective, "signed_pial_lr_points", signed_points))
+
         # Jacobian folding penalty
         jac_w = float(getattr(cfg.objective, "jacobian_weight", 0.0))
         jac_margin = float(getattr(cfg.objective, "jacobian_margin", 0.05))
@@ -1204,6 +1270,14 @@ def main(cfg: DictConfig):
                     "Collision-aware model selection can only update on epochs with collision metrics. "
                     "Recommended: set collision_interval == validation_interval.",
                     col_interval, val_interval,
+                )
+
+            if require_collision_for_best and col_interval != val_interval:
+                raise ValueError(
+                    f"checkpoint.require_collision_for_best=True requires "
+                    f"trainer.collision_interval == trainer.validation_interval. "
+                    f"Got collision_interval={col_interval}, validation_interval={val_interval}. "
+                    f"Set both to the same value or set require_collision_for_best=False."
                 )
 
 
@@ -1284,6 +1358,7 @@ def main(cfg: DictConfig):
             hd_w_eff = hd_w_base * t
             pial_lr_w_eff = pial_lr_w_base * t
             signed_w_eff = signed_w_base * t
+            signed_pial_lr_w_eff = signed_pial_lr_w_base * t
             jac_w_eff = jac_w * t
 
             model.train()
@@ -1323,6 +1398,13 @@ def main(cfg: DictConfig):
             signed_wmean_sum = 0.0
             signed_pmean_sum = 0.0
             signed_count = 0.0
+
+            signed_pial_lr_pen_sum = 0.0
+            signed_pial_lr_count = 0.0
+            signed_pial_lr_bad_lr_sum = 0.0
+            signed_pial_lr_bad_rl_sum = 0.0
+            signed_pial_lr_mean_lr_sum = 0.0
+            signed_pial_lr_mean_rl_sum = 0.0
 
 
             surf_stats = {s: {"chamfer_sq": 0.0, "count": 0.0} for s in surface_names}
@@ -1577,9 +1659,40 @@ def main(cfg: DictConfig):
                         loss_pial_lr = loss_pial_lr / float(pial_lr_pair_count)
 
                 # -----------------------
+                # Signed pial-LR non-penetration (L/R analogue of signed nested)
+                # -----------------------
+                loss_signed_pial_lr = torch.zeros((), device=device)
+                signed_pial_lr_pair_count = 0
+                signed_pial_lr_bad_lr_batch = 0.0
+                signed_pial_lr_bad_rl_batch = 0.0
+                signed_pial_lr_mean_lr_batch = 0.0
+                signed_pial_lr_mean_rl_batch = 0.0
+
+                if signed_pial_lr_w_eff > 0.0:
+                    for i in range(B):
+                        md = pred_mesh_mm_per_sample[i]
+                        if ("lh_pial" in md) and ("rh_pial" in md):
+                            vl, fl = md["lh_pial"]
+                            vr, fr = md["rh_pial"]
+                            lsgn_lr, bad_lr, bad_rl, msigned_lr, msigned_rl = signed_pial_lr_penalty(
+                                vl, fl, vr, fr,
+                                margin_mm=signed_pial_lr_margin,
+                                n_points=signed_pial_lr_points,
+                            )
+                            loss_signed_pial_lr = loss_signed_pial_lr + lsgn_lr
+                            signed_pial_lr_bad_lr_batch += float(bad_lr)
+                            signed_pial_lr_bad_rl_batch += float(bad_rl)
+                            signed_pial_lr_mean_lr_batch += float(msigned_lr)
+                            signed_pial_lr_mean_rl_batch += float(msigned_rl)
+                            signed_pial_lr_pair_count += 1
+
+                    if signed_pial_lr_pair_count > 0:
+                        loss_signed_pial_lr = loss_signed_pial_lr / float(signed_pial_lr_pair_count)
+
+                # -----------------------
                 # Chamfer/edge/normal losses (chunked)
                 # -----------------------
-                # chamfer_distance returns mean squared distances (mm²).
+                # chamfer_distance returns mean squared distances (mmÂ²).
                 # Logs report sqrt(loss_chamfer_mm2) as ChamferRMSE in mm.
                 loss_chamfer_mm2 = torch.zeros((), device=device)
                 loss_edge = torch.zeros((), device=device)
@@ -1633,6 +1746,7 @@ def main(cfg: DictConfig):
                     + pial_lr_w_eff * loss_pial_lr
                     + jac_w_eff * loss_jac
                     + signed_w_eff * loss_signed
+                    + signed_pial_lr_w_eff * loss_signed_pial_lr
                 )
                 
                 if not torch.isfinite(total_loss):
@@ -1645,6 +1759,7 @@ def main(cfg: DictConfig):
                         f"loss_sep={float(loss_sep.detach().item()):.8g}, "
                         f"loss_pial_lr={float(loss_pial_lr.detach().item()):.8g}, "
                         f"loss_signed={float(loss_signed.detach().item()):.8g}, "
+                        f"loss_signed_pial_lr={float(loss_signed_pial_lr.detach().item()):.8g}, "
                         f"loss_jac={float(loss_jac.detach().item()):.8g}"
                     )
 
@@ -1690,6 +1805,14 @@ def main(cfg: DictConfig):
                     signed_pmean_sum += float(signed_pmean_batch_sum)
                     signed_count += float(signed_pair_count)
 
+                if signed_pial_lr_pair_count > 0:
+                    signed_pial_lr_pen_sum += float((loss_signed_pial_lr.detach() * signed_pial_lr_pair_count).item())
+                    signed_pial_lr_count += float(signed_pial_lr_pair_count)
+                    signed_pial_lr_bad_lr_sum += float(signed_pial_lr_bad_lr_batch)
+                    signed_pial_lr_bad_rl_sum += float(signed_pial_lr_bad_rl_batch)
+                    signed_pial_lr_mean_lr_sum += float(signed_pial_lr_mean_lr_batch)
+                    signed_pial_lr_mean_rl_sum += float(signed_pial_lr_mean_rl_batch)
+
     
             # reduce train stats
             if is_distributed:
@@ -1703,6 +1826,9 @@ def main(cfg: DictConfig):
                         signed_wmean_sum, signed_pmean_sum, signed_count,
                         jac_pen_sum, jac_neg_sum, jac_count,
                         jac_p001_sum, jac_p01_sum, jac_p1_sum,
+                        signed_pial_lr_pen_sum, signed_pial_lr_count,
+                        signed_pial_lr_bad_lr_sum, signed_pial_lr_bad_rl_sum,
+                        signed_pial_lr_mean_lr_sum, signed_pial_lr_mean_rl_sum,
                     ],
                     device=device, dtype=torch.float64,
                 )
@@ -1717,6 +1843,9 @@ def main(cfg: DictConfig):
                     signed_wmean_sum, signed_pmean_sum, signed_count,
                     jac_pen_sum, jac_neg_sum, jac_count,
                     jac_p001_sum, jac_p01_sum, jac_p1_sum,
+                    signed_pial_lr_pen_sum, signed_pial_lr_count,
+                    signed_pial_lr_bad_lr_sum, signed_pial_lr_bad_rl_sum,
+                    signed_pial_lr_mean_lr_sum, signed_pial_lr_mean_rl_sum,
                 ) = tstat.tolist()
 
                 jac_min_tensor = torch.tensor(jac_min_global, device=device, dtype=torch.float64)
@@ -1771,6 +1900,20 @@ def main(cfg: DictConfig):
                     signed_badp_mean = 0.0
                     signed_wmean_mean = 0.0
                     signed_pmean_mean = 0.0
+
+                signed_pial_lr_pen_mean = (
+                    signed_pial_lr_pen_sum / signed_pial_lr_count if signed_pial_lr_count > 0 else 0.0
+                )
+                if signed_pial_lr_count > 0:
+                    signed_pial_lr_bad_lr_mean = signed_pial_lr_bad_lr_sum / signed_pial_lr_count
+                    signed_pial_lr_bad_rl_mean = signed_pial_lr_bad_rl_sum / signed_pial_lr_count
+                    signed_pial_lr_mean_lr_mean = signed_pial_lr_mean_lr_sum / signed_pial_lr_count
+                    signed_pial_lr_mean_rl_mean = signed_pial_lr_mean_rl_sum / signed_pial_lr_count
+                else:
+                    signed_pial_lr_bad_lr_mean = 0.0
+                    signed_pial_lr_bad_rl_mean = 0.0
+                    signed_pial_lr_mean_lr_mean = 0.0
+                    signed_pial_lr_mean_rl_mean = 0.0
                     
                 if jac_count > 0:
                     jac_pen_mean = jac_pen_sum / jac_count
@@ -1798,6 +1941,8 @@ def main(cfg: DictConfig):
                     "PialLRSepPen=%.6f | PialLRSepQ=%.4f mm | wPialLR=%.4f | "
                     "SignedPen=%.6f | SignedBadW=%.2f%% | SignedBadP=%.2f%% | "
                     "SignedWMean=%.4f mm | SignedPMean=%.4f mm | wSigned=%.4f | "
+                    "SignedLRPen=%.6f | wSignedLR=%.4f | "
+                    "SignedLRbadLH=%.2f%% | SignedLRbadRH=%.2f%% | "
                     "JacPen=%.6f | JacNeg=%.6f%% | JacMin=%.6f | "
                     "JacP0.01=%.6f | JacP0.1=%.6f | JacP1=%.6f | wJac=%.4f | "
                     "TotalObj=%.6f | Surfaces: %s",
@@ -1817,6 +1962,10 @@ def main(cfg: DictConfig):
                     signed_wmean_mean,
                     signed_pmean_mean,
                     signed_w_eff,
+                    signed_pial_lr_pen_mean,
+                    signed_pial_lr_w_eff,
+                    signed_pial_lr_bad_lr_mean,
+                    signed_pial_lr_bad_rl_mean,
                     jac_pen_mean,
                     jac_neg_mean,
                     jac_min_mean,
@@ -1856,6 +2005,12 @@ def main(cfg: DictConfig):
                     tb_writer.add_scalar("train/signed_white_mean_mm", signed_wmean_mean, epoch)
                     tb_writer.add_scalar("train/signed_pial_mean_mm", signed_pmean_mean, epoch)
                     tb_writer.add_scalar("train/signed_weight_eff", signed_w_eff, epoch)
+                    tb_writer.add_scalar("train/signed_pial_lr_penalty", signed_pial_lr_pen_mean, epoch)
+                    tb_writer.add_scalar("train/signed_pial_lr_weight_eff", signed_pial_lr_w_eff, epoch)
+                    tb_writer.add_scalar("train/signed_pial_lr_bad_lh_pct", signed_pial_lr_bad_lr_mean, epoch)
+                    tb_writer.add_scalar("train/signed_pial_lr_bad_rh_pct", signed_pial_lr_bad_rl_mean, epoch)
+                    tb_writer.add_scalar("train/signed_pial_lr_mean_lh_mm", signed_pial_lr_mean_lr_mean, epoch)
+                    tb_writer.add_scalar("train/signed_pial_lr_mean_rh_mm", signed_pial_lr_mean_rl_mean, epoch)
 
                     tb_writer.add_scalar("train/jac_penalty", jac_pen_mean, epoch)
                     tb_writer.add_scalar("train/jac_neg_pct", jac_neg_mean, epoch)
@@ -2019,9 +2174,9 @@ def main(cfg: DictConfig):
                             if not HAS_FCL:
                                 log.info("Epoch %d [Val] | Collision check skipped (python-fcl not available).", epoch)
                             else:
-                                log.info("Epoch %d [Val] | White–Pial Collisions LH: %s", epoch, fmt_collision_stats(lh_total, lh_hit, lh_contacts_sum))
-                                log.info("Epoch %d [Val] | White–Pial Collisions RH: %s", epoch, fmt_collision_stats(rh_total, rh_hit, rh_contacts_sum))
-                                log.info("Epoch %d [Val] | Pial–Pial Collisions LR: %s", epoch, fmt_collision_stats(lr_total, lr_hit, lr_contacts_sum))
+                                log.info("Epoch %d [Val] | Whiteâ€“Pial Collisions LH: %s", epoch, fmt_collision_stats(lh_total, lh_hit, lh_contacts_sum))
+                                log.info("Epoch %d [Val] | Whiteâ€“Pial Collisions RH: %s", epoch, fmt_collision_stats(rh_total, rh_hit, rh_contacts_sum))
+                                log.info("Epoch %d [Val] | Pialâ€“Pial Collisions LR: %s", epoch, fmt_collision_stats(lr_total, lr_hit, lr_contacts_sum))
 
                                 wp_pct, lr_pct = compute_collision_percentages(
                                     lh_total, lh_hit, rh_total, rh_hit, lr_total, lr_hit
@@ -2094,7 +2249,7 @@ def main(cfg: DictConfig):
                                 no_improve = 0
                                 score_improved = True
                                 score_save_message = (
-                                    "🌟 Best collision-aware model updated at epoch %d | "
+                                    "ðŸŒŸ Best collision-aware model updated at epoch %d | "
                                     "Score=%.4f | RMSE=%.4f mm | WP=%.2f%% | PialLR=%.2f%% | "
                                     "Guardrail=%.4f mm | BestRMSE=%.4f mm -> %s",
                                     epoch, score, rmse_mm, wp_pct, lr_pct,
@@ -2127,7 +2282,7 @@ def main(cfg: DictConfig):
                                     no_improve = 0
                                     score_improved = True
                                     score_save_message = (
-                                        "🌟 Best RMSE-fallback model updated at epoch %d | "
+                                        "ðŸŒŸ Best RMSE-fallback model updated at epoch %d | "
                                         "RMSE=%.4f mm | collision_available=False | "
                                         "require_collision_for_best=False -> %s",
                                         epoch, rmse_mm, ckpt_model,
@@ -2181,12 +2336,16 @@ def main(cfg: DictConfig):
                             if score_save_message is not None:
                                 log.info(*score_save_message)
 
-                        # Early stopping follows the final model-selection metric.
-                        # no_improve is the collision-aware score counter when collision metrics
-                        # are available, otherwise the RMSE fallback counter.
-                        if early_patience > 0 and no_improve >= early_patience:
+
+                        # NOTE: Early stopping and LR scheduler both monitor validation RMSE
+                        # (no_improve_rmse), intentionally decoupled from the collision-aware score.
+                        # The best model checkpoint (deform_best_model.pth) is still selected by
+                        # the collision-aware score. This is intentional: in exp25, collision noise
+                        # caused premature LR drops when scheduler.step(score) was used.
+
+                        if early_patience > 0 and no_improve_rmse >= early_patience:
                             log.info(
-                                "🛑 Early stopping after %d validation checks without collision-aware score improvement. "
+                                "🛑 Early stopping after %d validation checks without RMSE improvement. "
                                 "BestScore=%.4f at epoch %d | BestRMSE=%.4f at epoch %d | "
                                 "no_improve(score)=%d no_improve(rmse)=%d",
                                 early_patience, best_score, best_model_epoch, best_rmse_seen, best_rmse_epoch,
@@ -2201,9 +2360,11 @@ def main(cfg: DictConfig):
                     dist.broadcast(collision_error_tensor, src=0)
                     dist.broadcast(validation_error_tensor, src=0)
 
-                shared_score = float(score_tensor.item())
-                if math.isfinite(shared_score):
-                    scheduler.step(shared_score)
+                # LR scheduler follows RMSE as well, so a noisy collision-aware score
+                # cannot trigger spurious LR drops while accuracy is still improving.
+                shared_rmse_mm = float(rmse_tensor.item())
+                if math.isfinite(shared_rmse_mm):
+                    scheduler.step(shared_rmse_mm)
 
                 if rank == 0:
                     ckpt_last_full = os.path.join(out_root, "checkpoints", "deform_last_full.pth")

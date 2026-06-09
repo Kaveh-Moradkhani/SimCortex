@@ -291,12 +291,9 @@ class CSRDeformInferDataset(Dataset):
     Inference-only dataset for SurfDeform.
 
     Required inputs per subject:
-      - MNI-space preprocessed T1w image from scpp-preproc
-      - ribbon probability map from scpp-initsurf
-      - initial surfaces from scpp-initsurf
-
-    This dataset intentionally does NOT require or load ground-truth surfaces.
-    It is the correct dataset for MRI-only end-to-end inference.
+      - MNI-space preprocessed T1w image from simcortex-preproc
+      - ribbon probability map from simcortex-initsurf
+      - initial surfaces from simcortex-initsurf
     """
 
     def __init__(
