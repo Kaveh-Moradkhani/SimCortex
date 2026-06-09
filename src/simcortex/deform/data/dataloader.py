@@ -94,10 +94,7 @@ def read_mesh(path: str):
     if isinstance(m, trimesh.Scene):
         geoms = [g for g in m.geometry.values()]
         if len(geoms) == 0:
-            return (
-                np.zeros((0, 3), dtype=np.float32),
-                np.zeros((0, 3), dtype=np.int64),
-            )
+            raise ValueError(f"Empty trimesh.Scene (no geometry) loaded from: {path}")
         m = trimesh.util.concatenate(geoms)
 
     v = np.asarray(m.vertices, dtype=np.float32)
@@ -116,12 +113,6 @@ def normalize_mri_mean_std(mri: np.ndarray) -> np.ndarray:
     s = max(s, 1e-6)
     return ((mri - m) / s).astype(np.float32)
 
-
-def _norm01_by_p99(x: np.ndarray, eps=1e-6) -> np.ndarray:
-    p = np.percentile(x, 99)
-    p = max(float(p), eps)
-    y = x / p
-    return np.clip(y, 0.0, 1.0).astype(np.float32)
 
 
 class CSRDeformDataset(Dataset):
@@ -146,7 +137,7 @@ class CSRDeformDataset(Dataset):
         prob_clip_min: float = 0.0,
         prob_clip_max: float = 1.0,
         prob_gamma: float = 1.0,
-        aug: bool = False,
+        aug: bool = False,  # backward-compatible no-op; augmentation is handled in train.py
     ):
         self.preproc_root = str(preproc_root)
         self.initsurf_root = str(initsurf_root)
@@ -160,7 +151,6 @@ class CSRDeformDataset(Dataset):
         self.prob_clip_min = float(prob_clip_min)
         self.prob_clip_max = float(prob_clip_max)
         self.prob_gamma = float(prob_gamma)
-        self.aug = bool(aug)  
 
         self.samples = []
         dropped = 0
@@ -248,8 +238,11 @@ class CSRDeformDataset(Dataset):
 
         mri_out = mri_t[0, 0].numpy()
         prob_out = prob_t[0, 0].numpy()
-        assert mri_out.shape == self.inshape, (mri_out.shape, self.inshape)
-
+        if mri_out.shape != self.inshape:
+            raise ValueError(
+                f"Internal crop/pad error for subject '{subj}': "
+                f"got {mri_out.shape}, expected {self.inshape}"
+            )
 
         shift_ijk = np.array(pad_before, dtype=np.float32) - np.array(crop_before, dtype=np.float32)
 
@@ -383,7 +376,14 @@ class CSRDeformInferDataset(Dataset):
         subj, mri_path, prob_path, ini_paths = self.samples[idx]
 
         mri, affine = read_nii(mri_path)
-        prob, _ = read_nii(prob_path)
+        prob, prob_affine = read_nii(prob_path)
+
+        if not np.allclose(prob_affine, affine, atol=1e-4):
+            raise ValueError(
+                f"Prob/MRI affine mismatch for subject '{subj}'.\n"
+                f"  Prob affine:\n{prob_affine}\n"
+                f"  MRI affine:\n{affine}"
+            )
 
         if prob.shape != mri.shape:
             raise ValueError(

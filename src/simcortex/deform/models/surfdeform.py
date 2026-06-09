@@ -122,12 +122,17 @@ class DualMUNetV2(nn.Module):
         dropout: float = 0.0,
     ):
         super().__init__()
-        assert C_in >= 2, "Need MRI + at least 1 geom/prob channel"
-        geom_depth = int(max(1, min(6, geom_depth)))
+        if int(C_in) < 2:
+            raise ValueError(f"C_in must be >= 2 for [MRI + geom/prob], got {C_in}")
+        geom_depth = int(geom_depth)
+        if not (1 <= geom_depth <= 6):
+            raise ValueError(f"geom_depth must be in [1, 6], got {geom_depth}")
         dropout = float(dropout)
 
         # MRI channels
         Cm = list(C_hid)
+        if len(Cm) != 6:
+            raise ValueError(f"C_hid must contain exactly 6 channel values, got {len(Cm)}: {Cm}")
         # Geom channels (smaller)
         Cg = [max(4, int(c * geom_ratio)) for c in Cm]
 
@@ -313,15 +318,6 @@ class SurfDeform(nn.Module):
             gate_init=gate_init,
             dropout=dropout,
         )
-
-        D, H, W = self.inshape
-
-
-        grid = torch.stack(
-            torch.meshgrid(
-                torch.arange(D), torch.arange(H), torch.arange(W), indexing="ij"
-            )
-        )[None].float()  # (1,3,D,H,W)
 
         self.gaussian = GaussianFilter(
             C=3,

@@ -1,5 +1,4 @@
 import os
-import gc
 import math
 import logging
 from datetime import timedelta
@@ -23,7 +22,7 @@ import pandas as pd
 
 from pytorch3d.structures import Meshes
 from pytorch3d.ops import sample_points_from_meshes
-from pytorch3d.loss import chamfer_distance, mesh_edge_loss, mesh_normal_consistency
+from pytorch3d.loss import chamfer_distance, mesh_normal_consistency
 from pytorch3d.loss.point_mesh_distance import _PointFaceDistance
 from pytorch3d.ops import knn_points
 
@@ -81,6 +80,11 @@ def signed_nested_surface_penalty(
     Sign convention (assuming outward normals):
       - point inside a closed surface  -> signed distance < 0
       - point outside a closed surface -> signed distance > 0
+
+    WARNING: sign is determined by nearest-vertex normal projection, not a robust
+    signed distance or winding number. This is an approximation that can give the
+    wrong sign near sulci and high-curvature regions on non-convex cortical meshes.
+    Keep signed_nested_weight low (<= 4.0) until replaced with a robust implementation.
     """
     device = white_v.device
 
@@ -127,16 +131,6 @@ def signed_nested_surface_penalty(
         mean_signed_p = signed_p.mean().item()
 
     return loss, bad_white_pct, bad_pial_pct, mean_signed_w, mean_signed_p
-
-def spatial_gradients_3d(u: torch.Tensor):
-    """
-    u: (B, 3, D, H, W), displacement field in voxel units.
-    returns central-ish finite differences along D,H,W.
-    """
-    dz = u[:, :, 1:, :, :] - u[:, :, :-1, :, :]
-    dy = u[:, :, :, 1:, :] - u[:, :, :, :-1, :]
-    dx = u[:, :, :, :, 1:] - u[:, :, :, :, :-1]
-    return dz, dy, dx
 
 
 def jacobian_det_3d(phi: torch.Tensor):
@@ -397,6 +391,39 @@ def mesh_is_valid(verts: torch.Tensor, faces: torch.Tensor) -> bool:
     return True
 
 
+def edge_length_preservation_loss(
+    pred_v: torch.Tensor,
+    init_v: torch.Tensor,
+    faces: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Penalizes deviation of predicted edge lengths from the corresponding
+    initial-mesh edge lengths.
+
+    pred_v: (V, 3) predicted vertices in mm
+    init_v: (V, 3) initial vertices in mm (same topology as pred_v)
+    faces:  (F, 3) long face indices shared by pred_v and init_v
+
+    Note: all three triangle edges are used. Duplicate edges shared by adjacent
+    faces are intentionally harmless because pred/init are weighted identically.
+    """
+    f = faces.long()
+    edges = torch.cat(
+        [
+            f[:, [0, 1]],
+            f[:, [1, 2]],
+            f[:, [2, 0]],
+        ],
+        dim=0,
+    )
+
+    len_pred = (pred_v[edges[:, 0]] - pred_v[edges[:, 1]]).norm(dim=-1)
+    with torch.no_grad():
+        len_init = (init_v[edges[:, 0]] - init_v[edges[:, 1]]).norm(dim=-1)
+
+    return ((len_pred - len_init) ** 2).mean()
+
+
 # -----------------------
 # Low-quantile separation penalty
 # -----------------------
@@ -417,7 +444,7 @@ def point_to_mesh_dist_p3d(points: torch.Tensor, mesh: Meshes) -> torch.Tensor:
     tri_first = mesh.mesh_to_faces_packed_first_idx()  # (1,)
 
     d2 = _PointFaceDistanceOP(pts, first_idx, tris, tri_first, max_pts)  # squared
-    return d2.sqrt()
+    return d2.clamp_min(0.0).sqrt()
 
 
 def partial_hd_penalty(mesh_a: Meshes, mesh_b: Meshes, p: float, lam: float, n_pts: int):
@@ -727,6 +754,76 @@ def move_optimizer_state_to_device(optimizer, device):
                 state[key] = value.to(device=device, non_blocking=True)
 
 
+def build_adamw_param_groups(model, weight_decay: float):
+    """
+    AdamW parameter groups for 3D CNNs:
+      - decay: convolution / projection weights
+      - no_decay: biases, GroupNorm/norm parameters, and scalar/1D parameters
+    This avoids applying weight decay to GroupNorm affine parameters and gates.
+    """
+    decay, no_decay = [], []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        lname = name.lower()
+        if name.endswith(".bias") or param.ndim <= 1 or ".gn" in lname or "norm" in lname:
+            no_decay.append(param)
+        else:
+            decay.append(param)
+
+    groups = []
+    if decay:
+        groups.append({"params": decay, "weight_decay": float(weight_decay)})
+    if no_decay:
+        groups.append({"params": no_decay, "weight_decay": 0.0})
+    return groups
+
+
+def _rng_state_for_checkpoint():
+    state = {
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "numpy": np.random.get_state(),
+        "random": random.getstate(),
+    }
+    return state
+
+
+def _restore_rng_state_from_checkpoint(ckpt, *, rank: int, device, cfg):
+    """
+    Restore RNG state from a rank-0/single-process checkpoint.
+
+    In DDP this checkpoint is written only by rank 0, so exact per-rank RNG replay is
+    not possible from this file alone. Rank 0 restores exactly; other ranks are
+    reseeded deterministically with a rank/epoch offset to preserve augmentation
+    diversity instead of cloning rank-0 random streams.
+    """
+    rng = ckpt.get("rng_state", None)
+    if rng is None:
+        return
+
+    if rank == 0:
+        torch_state = rng.get("torch", None)
+        if torch_state is not None:
+            torch.set_rng_state(torch_state)
+
+        cuda_state = rng.get("cuda", None)
+        if torch.cuda.is_available() and cuda_state is not None:
+            torch.cuda.set_rng_state_all(cuda_state)
+
+        numpy_state = rng.get("numpy", None)
+        if numpy_state is not None:
+            np.random.set_state(numpy_state)
+
+        random_state = rng.get("random", None)
+        if random_state is not None:
+            random.setstate(random_state)
+    else:
+        # Avoid identical augmentation streams on nonzero DDP ranks after resume.
+        epoch_offset = int(ckpt.get("epoch", 0)) * 100000
+        seed_all(int(cfg.trainer.seed) + epoch_offset, rank=rank)
+
+
 def save_full_checkpoint(
     model,
     optimizer,
@@ -737,6 +834,8 @@ def save_full_checkpoint(
     best_rmse_seen: float,
     best_model_epoch: int,
     best_rmse_epoch: int,
+    no_improve: int,
+    no_improve_rmse: int,
     cfg,
 ):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -750,6 +849,9 @@ def save_full_checkpoint(
         "best_rmse_seen": best_rmse_seen,
         "best_model_epoch": best_model_epoch,
         "best_rmse_epoch": best_rmse_epoch,
+        "no_improve": int(no_improve),
+        "no_improve_rmse": int(no_improve_rmse),
+        "rng_state": _rng_state_for_checkpoint(),
         "config": OmegaConf.to_container(cfg, resolve=True),
     }
     torch.save(ckpt, path)
@@ -848,7 +950,6 @@ def main(cfg: DictConfig):
                             prob_clip_min=cfg.dataset.prob_clip_min,
                             prob_clip_max=cfg.dataset.prob_clip_max,
                             prob_gamma=cfg.dataset.prob_gamma,
-                            aug=False,
                         )
                     )
 
@@ -865,7 +966,6 @@ def main(cfg: DictConfig):
                             prob_clip_min=cfg.dataset.prob_clip_min,
                             prob_clip_max=cfg.dataset.prob_clip_max,
                             prob_gamma=cfg.dataset.prob_gamma,
-                            aug=False,
                         )
                     )
 
@@ -900,7 +1000,6 @@ def main(cfg: DictConfig):
                 prob_clip_min=cfg.dataset.prob_clip_min,
                 prob_clip_max=cfg.dataset.prob_clip_max,
                 prob_gamma=cfg.dataset.prob_gamma,
-                aug=False,
             )
 
             val_ds = CSRDeformDataset(
@@ -914,19 +1013,25 @@ def main(cfg: DictConfig):
                 prob_clip_min=cfg.dataset.prob_clip_min,
                 prob_clip_max=cfg.dataset.prob_clip_max,
                 prob_gamma=cfg.dataset.prob_gamma,
-                aug=False,
             )
 
         train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True) if is_distributed else None
+
+        num_workers = int(cfg.trainer.num_workers)
+        loader_common = dict(
+            num_workers=num_workers,
+            pin_memory=True,
+            collate_fn=collate_csr_deform,
+        )
+        if num_workers > 0:
+            loader_common.update(persistent_workers=True, prefetch_factor=2)
 
         train_loader = torch.utils.data.DataLoader(
             train_ds,
             batch_size=int(cfg.trainer.img_batch_size),
             sampler=train_sampler,
             shuffle=(train_sampler is None),
-            num_workers=int(cfg.trainer.num_workers),
-            pin_memory=True,
-            collate_fn=collate_csr_deform,
+            **loader_common,
         )
 
         # IMPORTANT: validation loader is NOT distributed to avoid sampler padding (77 -> 78)
@@ -934,9 +1039,7 @@ def main(cfg: DictConfig):
             val_ds,
             batch_size=int(cfg.trainer.img_batch_size),
             shuffle=False,
-            num_workers=int(cfg.trainer.num_workers),
-            pin_memory=True,
-            collate_fn=collate_csr_deform,
+            **loader_common,
         )
 
         if rank == 0:
@@ -983,9 +1086,8 @@ def main(cfg: DictConfig):
 
         # optim
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            build_adamw_param_groups(model, float(cfg.trainer.weight_decay)),
             lr=float(cfg.trainer.learning_rate),
-            weight_decay=float(cfg.trainer.weight_decay),
         )
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -1104,6 +1206,14 @@ def main(cfg: DictConfig):
                     col_interval, val_interval,
                 )
 
+
+        if require_collision_for_best and not HAS_FCL:
+            raise RuntimeError(
+                "checkpoint.require_collision_for_best=True but the trimesh/python-fcl "
+                "collision backend is unavailable. Install python-fcl or set "
+                "checkpoint.require_collision_for_best=False."
+            )
+
         # Diagnostic best RMSE checkpoint.
         best_rmse_seen = float("inf")
         best_rmse_epoch = -1
@@ -1143,12 +1253,16 @@ def main(cfg: DictConfig):
             best_rmse_seen = float(ckpt.get("best_rmse_seen", best_rmse_seen))
             best_model_epoch = int(ckpt.get("best_model_epoch", best_model_epoch))
             best_rmse_epoch = int(ckpt.get("best_rmse_epoch", best_rmse_epoch))
+            no_improve = int(ckpt.get("no_improve", no_improve))
+            no_improve_rmse = int(ckpt.get("no_improve_rmse", no_improve_rmse))
+            _restore_rng_state_from_checkpoint(ckpt, rank=rank, device=device, cfg=cfg)
 
             if rank == 0:
                 log.info(
                     "Resume state loaded: start_epoch=%d best_score=%.6f best_rmse=%.6f "
-                    "best_model_epoch=%d best_rmse_epoch=%d",
+                    "best_model_epoch=%d best_rmse_epoch=%d no_improve=%d no_improve_rmse=%d",
                     start_epoch, best_score, best_rmse_seen, best_model_epoch, best_rmse_epoch,
+                    no_improve, no_improve_rmse,
                 )
 
         # -----------------------
@@ -1176,7 +1290,7 @@ def main(cfg: DictConfig):
             optimizer.zero_grad(set_to_none=True)
 
             # epoch stats (sum over meshes)
-            csq_sum = 0.0
+            chamfer_sq_sum = 0.0
             edge_sum = 0.0
             normal_sum = 0.0
             mesh_count = 0.0
@@ -1211,7 +1325,7 @@ def main(cfg: DictConfig):
             signed_count = 0.0
 
 
-            surf_stats = {s: {"csq": 0.0, "count": 0.0} for s in surface_names}
+            surf_stats = {s: {"chamfer_sq": 0.0, "count": 0.0} for s in surface_names}
 
             num_train_batches = len(train_loader)
 
@@ -1287,6 +1401,7 @@ def main(cfg: DictConfig):
 
                 # Build mesh lists in WORLD(mm) for Chamfer/edge/normal
                 pred_verts_mm, pred_faces = [], []
+                init_verts_mm = []
                 gt_verts_mm, gt_faces = [], []
                 surf_of_mesh = []
 
@@ -1295,31 +1410,41 @@ def main(cfg: DictConfig):
 
                 for i in range(B):
                     pred_i = pred_vox[i, :lengths[i]]
+                    init_i = padded_init[i, :lengths[i]]
                     splits = torch.split(pred_i, per_counts_init[i], dim=0)
+                    init_splits = torch.split(init_i, per_counts_init[i], dim=0)
 
                     A = aff[i]
                     sh = shift[i].view(1, 3)
 
                     for j, s in enumerate(surface_names):
                         pv = splits[j]
+                        iv = init_splits[j]
                         gv = gt_verts_list[i][s]
 
                         f = init_faces_list[i][s]
                         gf = gt_faces_list[i][s]
 
                         pv_mm = voxel_to_world(pv - sh, A)
+                        iv_mm = voxel_to_world(iv - sh, A)
                         gv_mm = voxel_to_world(gv - sh, A)
 
                         # store pred mesh for separation losses if pred is valid
                         if mesh_is_valid(pv_mm, f):
                             pred_mesh_mm_per_sample[i][s] = (pv_mm, f)
 
-                        # for chamfer/regularizers, need both pred and gt valid
-                        if (not mesh_is_valid(pv_mm, f)) or (not mesh_is_valid(gv_mm, gf)):
+                        # for chamfer/regularizers, need pred/init/gt valid.
+                        # Edge-length preservation uses init vertices as the reference topology.
+                        if (
+                            (not mesh_is_valid(pv_mm, f))
+                            or (not mesh_is_valid(iv_mm, f))
+                            or (not mesh_is_valid(gv_mm, gf))
+                        ):
                             continue
 
                         pred_verts_mm.append(pv_mm)
                         pred_faces.append(f)
+                        init_verts_mm.append(iv_mm)
                         gt_verts_mm.append(gv_mm)
                         gt_faces.append(gf)
                         surf_of_mesh.append(s)
@@ -1454,11 +1579,13 @@ def main(cfg: DictConfig):
                 # -----------------------
                 # Chamfer/edge/normal losses (chunked)
                 # -----------------------
-                loss_csq = torch.zeros((), device=device)
+                # chamfer_distance returns mean squared distances (mm²).
+                # Logs report sqrt(loss_chamfer_mm2) as ChamferRMSE in mm.
+                loss_chamfer_mm2 = torch.zeros((), device=device)
                 loss_edge = torch.zeros((), device=device)
                 loss_norm = torch.zeros((), device=device)
 
-                csq_det_sum = 0.0
+                chamfer_sq_det_sum = 0.0
 
                 for start in range(0, M, mesh_chunk):
                     end = min(M, start + mesh_chunk)
@@ -1469,29 +1596,37 @@ def main(cfg: DictConfig):
                     pp = sample_points_from_meshes(mpred, num_samples=Ptrain)
                     pg = sample_points_from_meshes(mgt, num_samples=Ptrain)
 
-                    csq_per, _ = chamfer_distance(pp, pg, batch_reduction=None)
-                    e = mesh_edge_loss(mpred)
+                    chamfer_sq_per, _ = chamfer_distance(pp, pg, batch_reduction=None)
                     n = mesh_normal_consistency(mpred)
 
                     mchunk = (end - start)
 
-                    loss_csq = loss_csq + csq_per.mean() * mchunk
-                    loss_edge = loss_edge + e * mchunk
+                    edge_chunk = torch.zeros((), device=device)
+                    for k in range(mchunk):
+                        edge_chunk = edge_chunk + edge_length_preservation_loss(
+                            pred_verts_mm[start + k],
+                            init_verts_mm[start + k],
+                            pred_faces[start + k],
+                        )
+                    edge_chunk = edge_chunk / float(max(mchunk, 1))
+
+                    loss_chamfer_mm2 = loss_chamfer_mm2 + chamfer_sq_per.mean() * mchunk
+                    loss_edge = loss_edge + edge_chunk * mchunk
                     loss_norm = loss_norm + n * mchunk
 
-                    csq_det_sum += float(csq_per.detach().sum().item())
+                    chamfer_sq_det_sum += float(chamfer_sq_per.detach().sum().item())
                     for k in range(mchunk):
                         ss = surf_of_mesh[start + k]
-                        surf_stats[ss]["csq"] += float(csq_per[k].detach().item())
+                        surf_stats[ss]["chamfer_sq"] += float(chamfer_sq_per[k].detach().item())
                         surf_stats[ss]["count"] += 1.0
 
-                loss_csq = loss_csq / M
+                loss_chamfer_mm2 = loss_chamfer_mm2 / M
                 loss_edge = loss_edge / M
                 loss_norm = loss_norm / M
 
                 # total loss
                 total_loss = (
-                    chamfer_w * (chamfer_scale * loss_csq)
+                    chamfer_w * (chamfer_scale * loss_chamfer_mm2)
                     + edge_w * loss_edge
                     + normal_w * loss_norm
                     + hd_w_eff * loss_sep
@@ -1500,6 +1635,19 @@ def main(cfg: DictConfig):
                     + signed_w_eff * loss_signed
                 )
                 
+                if not torch.isfinite(total_loss):
+                    raise FloatingPointError(
+                        "Non-finite total_loss at "
+                        f"epoch={epoch}, batch_idx={batch_idx}: "
+                        f"loss_chamfer_mm2={float(loss_chamfer_mm2.detach().item()):.8g}, "
+                        f"loss_edge={float(loss_edge.detach().item()):.8g}, "
+                        f"loss_norm={float(loss_norm.detach().item()):.8g}, "
+                        f"loss_sep={float(loss_sep.detach().item()):.8g}, "
+                        f"loss_pial_lr={float(loss_pial_lr.detach().item()):.8g}, "
+                        f"loss_signed={float(loss_signed.detach().item()):.8g}, "
+                        f"loss_jac={float(loss_jac.detach().item()):.8g}"
+                    )
+
                 loss_to_back = total_loss / float(current_accum_size)
 
                 sync_ctx = nullcontext()
@@ -1516,7 +1664,7 @@ def main(cfg: DictConfig):
                     optimizer.zero_grad(set_to_none=True)
 
                 # stats
-                csq_sum += csq_det_sum
+                chamfer_sq_sum += chamfer_sq_det_sum
                 edge_sum += float((loss_edge.detach() * M).item())
                 normal_sum += float((loss_norm.detach() * M).item())
                 mesh_count += float(M)
@@ -1547,7 +1695,7 @@ def main(cfg: DictConfig):
             if is_distributed:
                 tstat = torch.tensor(
                     [
-                        csq_sum, edge_sum, normal_sum, mesh_count,
+                        chamfer_sq_sum, edge_sum, normal_sum, mesh_count,
                         total_obj_sum, total_obj_count,
                         sep_pen_sum, sep_q_sum, sep_count,
                         pial_lr_pen_sum, pial_lr_sep_q_sum, pial_lr_count,
@@ -1561,7 +1709,7 @@ def main(cfg: DictConfig):
                 dist.all_reduce(tstat, op=dist.ReduceOp.SUM)
 
                 (
-                    csq_sum, edge_sum, normal_sum, mesh_count,
+                    chamfer_sq_sum, edge_sum, normal_sum, mesh_count,
                     total_obj_sum, total_obj_count,
                     sep_pen_sum, sep_q_sum, sep_count,
                     pial_lr_pen_sum, pial_lr_sep_q_sum, pial_lr_count,
@@ -1577,13 +1725,13 @@ def main(cfg: DictConfig):
 
                 surf_tensor = torch.zeros((len(surface_names), 2), device=device, dtype=torch.float64)
                 for i, s in enumerate(surface_names):
-                    surf_tensor[i, 0] = surf_stats[s]["csq"]
+                    surf_tensor[i, 0] = surf_stats[s]["chamfer_sq"]
                     surf_tensor[i, 1] = surf_stats[s]["count"]
 
                 dist.all_reduce(surf_tensor, op=dist.ReduceOp.SUM)
 
                 surf_global = {
-                    s: {"csq": surf_tensor[i, 0].item(), "count": surf_tensor[i, 1].item()}
+                    s: {"chamfer_sq": surf_tensor[i, 0].item(), "count": surf_tensor[i, 1].item()}
                     for i, s in enumerate(surface_names)
                 }
             else:
@@ -1591,8 +1739,8 @@ def main(cfg: DictConfig):
 
             # log train
             if rank == 0 and mesh_count > 0:
-                csq_mean = csq_sum / mesh_count
-                rmse_mm_train = math.sqrt(max(csq_mean, 0.0))
+                chamfer_sq_mean = chamfer_sq_sum / mesh_count
+                rmse_mm_train = math.sqrt(max(chamfer_sq_mean, 0.0))
                 edge_mean = edge_sum / mesh_count
                 norm_mean = normal_sum / mesh_count
                 total_mean = total_obj_sum / max(total_obj_count, 1.0)
@@ -1640,7 +1788,7 @@ def main(cfg: DictConfig):
                     jac_p1_mean = 0.0
 
                 surf_str = ", ".join(
-                    f"{s}={math.sqrt(max(surf_global[s]['csq']/max(surf_global[s]['count'],1.0),0.0)):.4f}mm"
+                    f"{s}={math.sqrt(max(surf_global[s]['chamfer_sq']/max(surf_global[s]['count'],1.0),0.0)):.4f}mm"
                     for s in surface_names
                 )
 
@@ -1722,6 +1870,7 @@ def main(cfg: DictConfig):
             # -----------------------
             stop_tensor = torch.tensor(0, device=device, dtype=torch.int64)
             collision_error_tensor = torch.tensor(0, device=device, dtype=torch.int64)
+            validation_error_tensor = torch.tensor(0, device=device, dtype=torch.int64)
 
             if (epoch % val_interval) == 0:
                 # Use underlying module to avoid DDP collectives in forward
@@ -1730,10 +1879,11 @@ def main(cfg: DictConfig):
 
                 do_collision_check = (epoch % col_interval == 0)
                 rmse_tensor = torch.tensor(float("inf"), device=device, dtype=torch.float64)
+                score_tensor = torch.tensor(float("inf"), device=device, dtype=torch.float64)
 
-                val_csq_sum = 0.0
+                val_chamfer_sq_sum = 0.0
                 val_count = 0.0
-                val_surf = {s: {"csq": 0.0, "count": 0.0} for s in surface_names}
+                val_surf = {s: {"chamfer_sq": 0.0, "count": 0.0} for s in surface_names}
 
                 lh_total = lh_hit = lh_contacts_sum = 0.0
                 rh_total = rh_hit = rh_contacts_sum = 0.0
@@ -1801,11 +1951,11 @@ def main(cfg: DictConfig):
                                     pp = sample_points_from_meshes(mpred, num_samples=Pval)
                                     pg = sample_points_from_meshes(mgt, num_samples=Pval)
 
-                                    csq, _ = chamfer_distance(pp, pg)
+                                    val_chamfer_sq, _ = chamfer_distance(pp, pg)
 
-                                    val_csq_sum += float(csq.item())
+                                    val_chamfer_sq_sum += float(val_chamfer_sq.item())
                                     val_count += 1.0
-                                    val_surf[s]["csq"] += float(csq.item())
+                                    val_surf[s]["chamfer_sq"] += float(val_chamfer_sq.item())
                                     val_surf[s]["count"] += 1.0
 
                                 # collision checks
@@ -1841,13 +1991,21 @@ def main(cfg: DictConfig):
                                             lr_contacts_sum += float(ncon)
 
                     # log val + checkpoint
+                    if val_count <= 0:
+                        validation_error_tensor.fill_(1)
+                        log.error(
+                            "Epoch %d [Val] | Validation produced zero valid meshes. "
+                            "Check mesh validity, face indices, and coordinate conversion.",
+                            epoch,
+                        )
+
                     if val_count > 0:
-                        csq_mean = val_csq_sum / val_count
-                        rmse_mm = math.sqrt(max(csq_mean, 0.0))
+                        chamfer_sq_mean = val_chamfer_sq_sum / val_count
+                        rmse_mm = math.sqrt(max(chamfer_sq_mean, 0.0))
                         rmse_tensor.fill_(rmse_mm)
 
                         surf_str = ", ".join(
-                            f"{s}={math.sqrt(max(val_surf[s]['csq']/max(val_surf[s]['count'],1.0),0.0)):.4f}mm"
+                            f"{s}={math.sqrt(max(val_surf[s]['chamfer_sq']/max(val_surf[s]['count'],1.0),0.0)):.4f}mm"
                             for s in surface_names
                         )
                         log.info("Epoch %d [Val] | ChamferRMSE=%.4f mm | Surfaces: %s", epoch, rmse_mm, surf_str)
@@ -1882,6 +2040,8 @@ def main(cfg: DictConfig):
                                 epoch, score,
                             )
 
+                        score_tensor.fill_(float(score))
+
                         if tb_writer is not None:
                             tb_writer.add_scalar("val/rmse_mm", rmse_mm, epoch)
 
@@ -1907,60 +2067,33 @@ def main(cfg: DictConfig):
                                 tb_writer.add_scalar("val/pial_lr_collision_pct", lr_pct, epoch)
                                 tb_writer.add_scalar("val/best_collision_aware_score", best_score, epoch)
 
-                        # Diagnostic best-RMSE checkpoint.
-                        if rmse_mm < (best_rmse_seen - early_rmse_delta):
+                        # Diagnostic best-RMSE checkpoint and final score checkpoint.
+                        # First finalize all state/counters, then write any checkpoint files so
+                        # every full checkpoint contains self-consistent best/counter state.
+                        ckpt_rmse = os.path.join(out_root, "checkpoints", "deform_best_rmse.pth")
+                        ckpt_rmse_full = os.path.join(out_root, "checkpoints", "deform_best_rmse_full.pth")
+                        ckpt_model = os.path.join(out_root, "checkpoints", "deform_best_model.pth")
+                        ckpt_model_full = os.path.join(out_root, "checkpoints", "deform_best_model_full.pth")
+
+                        rmse_improved = rmse_mm < (best_rmse_seen - early_rmse_delta)
+                        if rmse_improved:
                             best_rmse_seen = rmse_mm
                             best_rmse_epoch = epoch
                             no_improve_rmse = 0
-                            ckpt_rmse = os.path.join(out_root, "checkpoints", "deform_best_rmse.pth")
-                            ckpt_rmse_full = os.path.join(out_root, "checkpoints", "deform_best_rmse_full.pth")
-
-                            save_model_state(model, ckpt_rmse)
-                            save_full_checkpoint(
-                                model=model,
-                                optimizer=optimizer,
-                                scheduler=scheduler,
-                                path=ckpt_rmse_full,
-                                epoch=epoch,
-                                best_score=best_score,
-                                best_rmse_seen=best_rmse_seen,
-                                best_model_epoch=best_model_epoch,
-                                best_rmse_epoch=best_rmse_epoch,
-                                cfg=cfg,
-                            )
-
-
-                            log.info(
-                                "🌟 Best RMSE checkpoint updated at epoch %d | RMSE=%.4f mm -> %s",
-                                epoch, rmse_mm, ckpt_rmse,
-                            )
                         else:
                             no_improve_rmse += 1
 
                         reasonable = rmse_mm <= best_rmse_seen * rmse_guardrail_rel
-                        ckpt_model = os.path.join(out_root, "checkpoints", "deform_best_model.pth")
-                        ckpt_model_full = os.path.join(out_root, "checkpoints", "deform_best_model_full.pth")
+                        score_improved = False
+                        score_save_message = None
 
                         if collision_available:
                             if reasonable and score < (best_score - score_delta):
                                 best_score = score
                                 best_model_epoch = epoch
                                 no_improve = 0
-                                save_model_state(model, ckpt_model)
-                                save_full_checkpoint(
-                                    model=model,
-                                    optimizer=optimizer,
-                                    scheduler=scheduler,
-                                    path=ckpt_model_full,
-                                    epoch=epoch,
-                                    best_score=best_score,
-                                    best_rmse_seen=best_rmse_seen,
-                                    best_model_epoch=best_model_epoch,
-                                    best_rmse_epoch=best_rmse_epoch,
-                                    cfg=cfg,
-                                )
-
-                                log.info(
+                                score_improved = True
+                                score_save_message = (
                                     "🌟 Best collision-aware model updated at epoch %d | "
                                     "Score=%.4f | RMSE=%.4f mm | WP=%.2f%% | PialLR=%.2f%% | "
                                     "Guardrail=%.4f mm | BestRMSE=%.4f mm -> %s",
@@ -1988,25 +2121,12 @@ def main(cfg: DictConfig):
                                 )
                             else:
                                 fallback_score = rmse_mm
-
                                 if fallback_score < (best_score - score_delta):
                                     best_score = fallback_score
                                     best_model_epoch = epoch
                                     no_improve = 0
-                                    save_model_state(model, ckpt_model)
-                                    save_full_checkpoint(
-                                        model=model,
-                                        optimizer=optimizer,
-                                        scheduler=scheduler,
-                                        path=ckpt_model_full,
-                                        epoch=epoch,
-                                        best_score=best_score,
-                                        best_rmse_seen=best_rmse_seen,
-                                        best_model_epoch=best_model_epoch,
-                                        best_rmse_epoch=best_rmse_epoch,
-                                        cfg=cfg,
-                                    )
-                                    log.info(
+                                    score_improved = True
+                                    score_save_message = (
                                         "🌟 Best RMSE-fallback model updated at epoch %d | "
                                         "RMSE=%.4f mm | collision_available=False | "
                                         "require_collision_for_best=False -> %s",
@@ -2020,14 +2140,53 @@ def main(cfg: DictConfig):
                                         "BestScore=%.4f | BestModelEpoch=%d | no_improve=%d",
                                         epoch, rmse_mm, best_score, best_model_epoch, no_improve,
                                     )
-                        # Early stopping follows the RMSE plateau (decoupled from the
-                        # collision-aware score). The score still selects best_model, but
-                        # training continues as long as val RMSE keeps improving, so a noisy
-                        # WP/LR score (single-subject quantization) can no longer cut training
-                        # short while accuracy is still improving.
-                        if early_patience > 0 and no_improve_rmse >= early_patience:
+
+                        if rmse_improved:
+                            save_model_state(model, ckpt_rmse)
+                            save_full_checkpoint(
+                                model=model,
+                                optimizer=optimizer,
+                                scheduler=scheduler,
+                                path=ckpt_rmse_full,
+                                epoch=epoch,
+                                best_score=best_score,
+                                best_rmse_seen=best_rmse_seen,
+                                best_model_epoch=best_model_epoch,
+                                best_rmse_epoch=best_rmse_epoch,
+                                no_improve=no_improve,
+                                no_improve_rmse=no_improve_rmse,
+                                cfg=cfg,
+                            )
                             log.info(
-                                "🛑 Early stopping after %d validation checks without RMSE improvement. "
+                                "🌟 Best RMSE checkpoint updated at epoch %d | RMSE=%.4f mm -> %s",
+                                epoch, rmse_mm, ckpt_rmse,
+                            )
+
+                        if score_improved:
+                            save_model_state(model, ckpt_model)
+                            save_full_checkpoint(
+                                model=model,
+                                optimizer=optimizer,
+                                scheduler=scheduler,
+                                path=ckpt_model_full,
+                                epoch=epoch,
+                                best_score=best_score,
+                                best_rmse_seen=best_rmse_seen,
+                                best_model_epoch=best_model_epoch,
+                                best_rmse_epoch=best_rmse_epoch,
+                                no_improve=no_improve,
+                                no_improve_rmse=no_improve_rmse,
+                                cfg=cfg,
+                            )
+                            if score_save_message is not None:
+                                log.info(*score_save_message)
+
+                        # Early stopping follows the final model-selection metric.
+                        # no_improve is the collision-aware score counter when collision metrics
+                        # are available, otherwise the RMSE fallback counter.
+                        if early_patience > 0 and no_improve >= early_patience:
+                            log.info(
+                                "🛑 Early stopping after %d validation checks without collision-aware score improvement. "
                                 "BestScore=%.4f at epoch %d | BestRMSE=%.4f at epoch %d | "
                                 "no_improve(score)=%d no_improve(rmse)=%d",
                                 early_patience, best_score, best_model_epoch, best_rmse_seen, best_rmse_epoch,
@@ -2038,11 +2197,13 @@ def main(cfg: DictConfig):
 
                 if is_distributed:
                     dist.broadcast(rmse_tensor, src=0)
+                    dist.broadcast(score_tensor, src=0)
                     dist.broadcast(collision_error_tensor, src=0)
+                    dist.broadcast(validation_error_tensor, src=0)
 
-                shared_rmse_mm = float(rmse_tensor.item())
-                if math.isfinite(shared_rmse_mm):
-                    scheduler.step(shared_rmse_mm)
+                shared_score = float(score_tensor.item())
+                if math.isfinite(shared_score):
+                    scheduler.step(shared_score)
 
                 if rank == 0:
                     ckpt_last_full = os.path.join(out_root, "checkpoints", "deform_last_full.pth")
@@ -2056,7 +2217,15 @@ def main(cfg: DictConfig):
                         best_rmse_seen=best_rmse_seen,
                         best_model_epoch=best_model_epoch,
                         best_rmse_epoch=best_rmse_epoch,
+                        no_improve=no_improve,
+                        no_improve_rmse=no_improve_rmse,
                         cfg=cfg,
+                    )
+
+                if validation_error_tensor.item() == 1:
+                    raise RuntimeError(
+                        "Validation produced zero valid meshes. Check mesh validity, face indices, "
+                        "and coordinate conversion."
                     )
 
                 if collision_error_tensor.item() == 1:
