@@ -1285,7 +1285,6 @@ def main(cfg: DictConfig):
                     padded_init,
                     vol,
                     int(cfg.model.n_steps),
-                    return_phis=False,
                 )
 
                 # Build mesh lists in WORLD(mm) for Chamfer/edge/normal

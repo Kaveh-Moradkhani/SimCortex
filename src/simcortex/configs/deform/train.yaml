@@ -1,4 +1,5 @@
 user_config: null
+
 dataset:
   split_file: /project/hippocampus/common/kaveh/workspace/datasets/splits/dataset_split.csv
   train_split_name: train
@@ -12,113 +13,107 @@ dataset:
     HCP_YA: /project/hippocampus/common/kaveh/workspace/datasets/hcpya-u100/derivatives/sc-initsurf-0.2
     OASIS1: /project/hippocampus/common/kaveh/workspace/datasets/oasis-1/derivatives/sc-initsurf-0.2
   surface_name:
-  - lh_pial
-  - lh_white
-  - rh_pial
-  - rh_white
+    - lh_pial
+    - lh_white
+    - rh_pial
+    - rh_white
   prob_clip_min: 0.0
   prob_clip_max: 1.0
   prob_gamma: 1.0
-  # spatial (affine) augmentation
-  aug_prob: 0.05
-  aug_rot_range_deg: 0.75
-  aug_scale_range: 0.005
-  aug_trans_range_mm: 0.25
-  # MRI-appearance augmentation : ON (the train/val-gap lever)
-  aug_intensity_prob: 0.05
-  aug_bias_strength: 0.1
-  aug_gain_range: 0.05
-  aug_bright_range: 0.05
-  aug_noise_std: 0.02
+
+  aug_prob: 0.3
+  aug_rot_range_deg: 3.0
+  aug_scale_range: 0.02
+  aug_trans_range_mm: 1.0
+
+  aug_intensity_prob: 0.3
+  aug_bias_strength: 0.2
+  aug_gain_range: 0.1
+  aug_bright_range: 0.1
+  aug_noise_std: 0.05
 
 trainer:
   seed: 2025
   img_batch_size: 1
   grad_accum_steps: 4
-
-  num_epochs: 100
+  num_epochs: 600
   validation_interval: 5
   collision_interval: 5
 
-  learning_rate: 2.0e-6
-  weight_decay: 5.0e-5
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
 
-  points_per_image: 250000
-  val_points_per_image: 200000
+  points_per_image: 180000
+  val_points_per_image: 150000 
 
   num_workers: 4
   log_level: INFO
   mesh_chunk: 4
   grad_clip_norm: 1.0
 
-  scheduler_patience: 3
+  scheduler_patience: 4
   scheduler_factor: 0.5
-  scheduler_min_lr: 5.0e-7
-  scheduler_threshold_mm: 0.0002
+  scheduler_min_lr: 1.0e-6
+  scheduler_threshold_mm: 0.0004
   scheduler_threshold_mode: abs
   scheduler_cooldown: 1
 
-  early_stop_patience: 10
-  early_stop_min_delta_mm: 0.00015
-
+  early_stop_patience: 15
+  early_stop_min_delta_mm: 0.0003
   resume_from: null
 
 model:
   sigma: 1
   n_steps: 8
   inshape:
-  - 184
-  - 224
-  - 184
-  c_hid:  
-  - 8
-  - 16
-  - 32
-  - 64
-  - 128
-  - 128
+    - 184
+    - 224
+    - 184
+  c_hid:
+    - 8
+    - 16
+    - 32
+    - 64
+    - 128
+    - 128
   c_in: 2
   geom_ratio: 0.5
   geom_depth: 6
   gn_groups: 8
   gate_init: -3.0
-  dropout: 0.0
-  init_ckpt:  /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp28_hcpya+oasis1/checkpoints/deform_best_model.pth
+  dropout: 0.1
+  init_ckpt: null
   init_strict: true
 
 objective:
   chamfer_weight: 1.0
   chamfer_scale: 1.0
 
-  edge_loss_weight: 2.5      
+  edge_loss_weight: 2.5
   normal_weight: 0.25
+  reg_warmup_epochs: 25
 
-  reg_warmup_epochs: 3
-
+  # White-pial HD guardrail.
   hd_weight: 5.5
   hd_p: 0.05
   hd_lambda_mm: 0.75
   hd_points: 50000
 
   signed_nested_weight: 8.0
-  signed_margin_mm: 0.50
+  signed_margin_mm: 0.55
   signed_points: 50000
 
-  pial_lr_hd_weight: 2.0
+  pial_lr_hd_weight: 1.5
   pial_lr_hd_p: 0.05
-  pial_lr_hd_lambda_mm: 1.05
-  pial_lr_hd_points: 50000
-
-  # jacobian (token)
-  jacobian_weight: 0.05
-  jacobian_margin: 0.1
-  jacobian_topk_frac: 0.001
+  pial_lr_hd_lambda_mm: 1.0
+  pial_lr_hd_points: 30000
 
 checkpoint:
-  alpha_wp: 0.08
-  alpha_lr: 0.05
-  rmse_guardrail_rel: 1.01
-  min_delta_score: 0.00005
+  alpha_wp: 0.03
+  alpha_lr: 0.015
+  rmse_guardrail_rel: 1.03
+  min_delta_score: 0.0001
   require_collision_for_best: true
+
 outputs:
-  root: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp32_hcpya+oasis1
+  root: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp33_hcpya+oasis1
