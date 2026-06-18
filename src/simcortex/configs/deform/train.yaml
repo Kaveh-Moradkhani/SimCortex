@@ -20,40 +20,49 @@ dataset:
   prob_clip_max: 1.0
   prob_gamma: 1.0
   # spatial (affine) augmentation
-  aug_prob: 0.3
-  aug_rot_range_deg: 3.0
-  aug_scale_range: 0.02
-  aug_trans_range_mm: 1.0
+  aug_prob: 0.05
+  aug_rot_range_deg: 0.75
+  aug_scale_range: 0.005
+  aug_trans_range_mm: 0.25
   # MRI-appearance augmentation : ON (the train/val-gap lever)
-  aug_intensity_prob: 0.3
-  aug_bias_strength: 0.2
-  aug_gain_range: 0.1
-  aug_bright_range: 0.1
-  aug_noise_std: 0.05
+  aug_intensity_prob: 0.05
+  aug_bias_strength: 0.1
+  aug_gain_range: 0.05
+  aug_bright_range: 0.05
+  aug_noise_std: 0.02
+
 trainer:
   seed: 2025
   img_batch_size: 1
   grad_accum_steps: 4
-  num_epochs: 450
+
+  num_epochs: 100
   validation_interval: 5
   collision_interval: 5
-  learning_rate: 0.0001
-  weight_decay: 0.0001
-  points_per_image: 180000
-  val_points_per_image: 150000
+
+  learning_rate: 2.0e-6
+  weight_decay: 5.0e-5
+
+  points_per_image: 250000
+  val_points_per_image: 200000
+
   num_workers: 4
   log_level: INFO
   mesh_chunk: 4
   grad_clip_norm: 1.0
-  scheduler_patience: 4
+
+  scheduler_patience: 3
   scheduler_factor: 0.5
-  scheduler_min_lr: 1.0e-06
-  scheduler_threshold_mm: 0.0004
+  scheduler_min_lr: 5.0e-7
+  scheduler_threshold_mm: 0.0002
   scheduler_threshold_mode: abs
   scheduler_cooldown: 1
-  early_stop_patience: 15
-  early_stop_min_delta_mm: 0.0003
+
+  early_stop_patience: 10
+  early_stop_min_delta_mm: 0.00015
+
   resume_from: null
+
 model:
   sigma: 1
   n_steps: 8
@@ -61,7 +70,7 @@ model:
   - 184
   - 224
   - 184
-  c_hid:            # standard width (capacity ruled out by exp23/exp25)
+  c_hid:  
   - 8
   - 16
   - 32
@@ -73,42 +82,43 @@ model:
   geom_depth: 6
   gn_groups: 8
   gate_init: -3.0
-  dropout: 0.1
-  init_ckpt: null
+  dropout: 0.0
+  init_ckpt:  /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp28_hcpya+oasis1/checkpoints/deform_best_model.pth
   init_strict: true
+
 objective:
   chamfer_weight: 1.0
   chamfer_scale: 1.0
-  edge_loss_weight: 2.5          # raised for the init-relative edge-preservation loss (~10-50x smaller scale)
+
+  edge_loss_weight: 2.5      
   normal_weight: 0.25
-  reg_warmup_epochs: 25
-  # white-pial HD guardrail (anatomical scale)
+
+  reg_warmup_epochs: 3
+
   hd_weight: 5.5
   hd_p: 0.05
   hd_lambda_mm: 0.75
   hd_points: 50000
-  # signed nested white-pial (the WP topology workhorse)
+
   signed_nested_weight: 8.0
-  signed_margin_mm: 0.55
+  signed_margin_mm: 0.50
   signed_points: 50000
-  # pial-LR quantile guardrail (kept)
-  pial_lr_hd_weight: 1.5
+
+  pial_lr_hd_weight: 2.0
   pial_lr_hd_p: 0.05
-  pial_lr_hd_lambda_mm: 1.0
-  pial_lr_hd_points: 30000
-  # NEW: signed pial-LR non-penetration penalty (fixes the L/R drift)
-  signed_pial_lr_weight: 0.5
-  signed_pial_lr_margin_mm: 0.5
-  signed_pial_lr_points: 40000
+  pial_lr_hd_lambda_mm: 1.05
+  pial_lr_hd_points: 50000
+
   # jacobian (token)
   jacobian_weight: 0.05
   jacobian_margin: 0.1
   jacobian_topk_frac: 0.001
+
 checkpoint:
-  alpha_wp: 0.03
-  alpha_lr: 0.015
-  rmse_guardrail_rel: 1.03
-  min_delta_score: 0.0001
+  alpha_wp: 0.08
+  alpha_lr: 0.05
+  rmse_guardrail_rel: 1.01
+  min_delta_score: 0.00005
   require_collision_for_best: true
 outputs:
-  root: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp28_hcpya+oasis1
+  root: /project/hippocampus/common/kaveh/workspace/simcortex-runs/deform/exp32_hcpya+oasis1

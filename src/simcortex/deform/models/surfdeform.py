@@ -332,20 +332,15 @@ class SurfDeform(nn.Module):
         vert: torch.Tensor,
         vol: torch.Tensor,
         n_steps: int,
-        return_phis: bool = False,
     ):
         if tuple(vol.shape[2:]) != self.inshape:
             raise ValueError(f"Input vol shape {tuple(vol.shape[2:])} != inshape {self.inshape}")
 
         svfs = self.munet(vol)
-        phis = [] if return_phis else None
 
         for svf in svfs:
             svf = self.gaussian(svf)
             phi = self.integrate(svf, n_steps)
-
-            if return_phis:
-                phis.append(phi)
 
             deform = self.interpolate(
                 vert[:, :, None, None],
@@ -353,9 +348,6 @@ class SurfDeform(nn.Module):
             )[..., 0, 0].permute(0, 2, 1)
 
             vert = vert + deform
-
-        if return_phis:
-            return vert, {"phis": phis}
 
         return vert
 

@@ -43,7 +43,6 @@ class PipelineConfig:
     transform_type: str
     overwrite: bool
     keep_work: bool
-    qc_collisions: bool
     initsurf_workers: int
     export_native: bool
 
@@ -103,10 +102,10 @@ def build_layout(sub: SubjectInput, cfg: PipelineConfig) -> SubjectLayout:
     return SubjectLayout(
         subject=subject,
         session=session,
-        preproc_root=cfg.work_root / "sc-preproc-0.1",
-        seg_root=cfg.work_root / "sc-seg-0.1",
-        initsurf_root=cfg.work_root / "sc-initsurf-0.1",
-        deform_root=cfg.work_root / "sc-deform-0.1",
+        preproc_root=cfg.work_root / "sc-preproc-0.2",
+        seg_root=cfg.work_root / "sc-seg-0.2",
+        initsurf_root=cfg.work_root / "sc-initsurf-0.2",
+        deform_root=cfg.work_root / "sc-deform-0.2",
         tmp_dir=cfg.work_root / "tmp" / subject / session,
         log_dir=cfg.work_root / "logs" / subject / session,
         final_dir=cfg.out_root / subject / session / "surfaces",
@@ -542,56 +541,6 @@ def export_native_surfaces(layout: SubjectLayout, cfg: PipelineConfig) -> float:
     log.info("[export-native] Exported 4 native-space surfaces in %.2f sec", elapsed)
     return elapsed
 
-
-# =============================================================================
-# QC
-# =============================================================================
-
-def run_collision_qc(final_dir: Path, subject: str, session: str, space: str, prefix: str) -> dict:
-    qc = {
-        f"{prefix}_lh_white_pial_collision": "NA",
-        f"{prefix}_lh_white_pial_contacts": "NA",
-        f"{prefix}_rh_white_pial_collision": "NA",
-        f"{prefix}_rh_white_pial_contacts": "NA",
-        f"{prefix}_lh_pial_rh_pial_collision": "NA",
-        f"{prefix}_lh_pial_rh_pial_contacts": "NA",
-    }
-
-    try:
-        import trimesh
-        from trimesh.collision import CollisionManager
-    except Exception as e:
-        log.warning("[qc:%s] Collision QC skipped because trimesh/FCL is unavailable: %r", space, e)
-        return qc
-
-    paths = expected_final_surface_paths(final_dir, subject, session, space)
-    for p in paths.values():
-        if not p.exists():
-            log.warning("[qc:%s] skipped because missing file: %s", space, p)
-            return qc
-
-    meshes = {k: trimesh.load(p, process=False) for k, p in paths.items()}
-
-    def check(a: str, b: str) -> tuple[bool, int]:
-        cm = CollisionManager()
-        cm.add_object("a", meshes[a])
-        cm.add_object("b", meshes[b])
-        hit, contacts = cm.in_collision_internal(return_names=False, return_data=True)
-        return bool(hit), 0 if contacts is None else int(len(contacts))
-
-    pairs = [
-        ("lh_white", "lh_pial", f"{prefix}_lh_white_pial_collision", f"{prefix}_lh_white_pial_contacts"),
-        ("rh_white", "rh_pial", f"{prefix}_rh_white_pial_collision", f"{prefix}_rh_white_pial_contacts"),
-        ("lh_pial", "rh_pial", f"{prefix}_lh_pial_rh_pial_collision", f"{prefix}_lh_pial_rh_pial_contacts"),
-    ]
-    for a, b, hit_key, n_key in pairs:
-        hit, n = check(a, b)
-        qc[hit_key] = int(hit)
-        qc[n_key] = n
-        log.info("[qc:%s] %s vs %s | collision=%s | contacts=%d", space, a, b, hit, n)
-    return qc
-
-
 # =============================================================================
 # Summary
 # =============================================================================
@@ -605,12 +554,6 @@ def write_summary_row(summary_path: Path, row: dict) -> None:
         "total_sec", "total_min", "final_dir",
         "lh_pial", "lh_white", "rh_pial", "rh_white",
         "native_lh_pial", "native_lh_white", "native_rh_pial", "native_rh_white",
-        "qc_lh_white_pial_collision", "qc_lh_white_pial_contacts",
-        "qc_rh_white_pial_collision", "qc_rh_white_pial_contacts",
-        "qc_lh_pial_rh_pial_collision", "qc_lh_pial_rh_pial_contacts",
-        "qc_native_lh_white_pial_collision", "qc_native_lh_white_pial_contacts",
-        "qc_native_rh_white_pial_collision", "qc_native_rh_white_pial_contacts",
-        "qc_native_lh_pial_rh_pial_collision", "qc_native_lh_pial_rh_pial_contacts",
         "error",
     ]
 
@@ -640,7 +583,6 @@ def run_one_subject(sub: SubjectInput, cfg: PipelineConfig, index: int, total: i
         "collect": 0.0,
         "export_native": 0.0,
     }
-    qc_row: dict = {}
     status = "FAILED"
     error_msg = ""
     t_all0 = time.time()
@@ -663,11 +605,6 @@ def run_one_subject(sub: SubjectInput, cfg: PipelineConfig, index: int, total: i
 
         if cfg.export_native:
             stage_times["export_native"] = export_native_surfaces(layout, cfg)
-
-        if cfg.qc_collisions:
-            qc_row.update(run_collision_qc(layout.final_dir, layout.subject, layout.session, cfg.space, prefix="qc"))
-            if cfg.export_native:
-                qc_row.update(run_collision_qc(layout.final_dir, layout.subject, layout.session, "native", prefix="qc_native"))
 
         status = "OK"
 
@@ -705,7 +642,7 @@ def run_one_subject(sub: SubjectInput, cfg: PipelineConfig, index: int, total: i
             "native_rh_white": str(native_paths["rh_white"]) if cfg.export_native else "",
             "error": error_msg,
         }
-        row.update(qc_row)
+
         write_summary_row(summary_path, row)
 
     log.info("Finished %s %s in %.2f minutes", layout.subject, layout.session, total_sec / 60.0)
@@ -731,7 +668,6 @@ def build_parser() -> argparse.ArgumentParser:
         x.add_argument("--transform-type", default="Affine", choices=["Rigid", "Affine"])
         x.add_argument("--overwrite", action="store_true")
         x.add_argument("--keep-work", action="store_true")
-        x.add_argument("--qc-collisions", action="store_true")
         x.add_argument("--initsurf-workers", type=int, default=1)
         x.add_argument("--export-native", action="store_true")
 
@@ -780,7 +716,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         transform_type=str(args.transform_type),
         overwrite=bool(args.overwrite),
         keep_work=bool(args.keep_work),
-        qc_collisions=bool(args.qc_collisions),
         initsurf_workers=max(1, int(args.initsurf_workers)),
         export_native=bool(args.export_native),
     )
@@ -802,3 +737,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
