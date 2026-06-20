@@ -377,6 +377,7 @@ def run_deform(layout: SubjectLayout, cfg: PipelineConfig) -> float:
         f"model.ckpt_path={cfg.deform_ckpt}",
         f"outputs.out_root={layout.deform_root}",
         f"outputs.log_dir={layout.log_dir / 'deform_internal'}",
+        f"hydra.run.dir={layout.log_dir / 'deform_hydra_log'}",
     ]
     elapsed = run_cmd("deform", cmd, layout.log_dir / "deform.log", cfg.project_root, cfg)
 

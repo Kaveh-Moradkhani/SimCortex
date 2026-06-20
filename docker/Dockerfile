@@ -1,7 +1,23 @@
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS conda_env
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+COPY docker/simcortex-env.tar.gz /tmp/simcortex-env.tar.gz
+
+RUN mkdir -p /opt/conda-env && \
+    tar -xzf /tmp/simcortex-env.tar.gz -C /opt/conda-env && \
+    /opt/conda-env/bin/python /opt/conda-env/bin/conda-unpack && \
+    chmod -R a+rX /opt/conda-env && \
+    rm /tmp/simcortex-env.tar.gz
+
+
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-WORKDIR /opt/simcortexpp
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /opt/SimCortex
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
@@ -9,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     tini \
+    procps \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -20,25 +37,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglu1-mesa \
     && rm -rf /var/lib/apt/lists/*
 
-COPY docker/simcortexpp-env.tar.gz /tmp/simcortexpp-env.tar.gz
-
-RUN mkdir -p /opt/conda-env && \
-    tar -xzf /tmp/simcortexpp-env.tar.gz -C /opt/conda-env && \
-    /opt/conda-env/bin/python /opt/conda-env/bin/conda-unpack && \
-    rm /tmp/simcortexpp-env.tar.gz
+COPY --from=conda_env /opt/conda-env /opt/conda-env
 
 ENV PATH="/opt/conda-env/bin:${PATH}"
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH="/opt/SimCortex/src:/opt/SimCortex"
 
-COPY . /opt/simcortexpp
+# Copy only the runtime source files, not the large conda-pack tarball.
+COPY --chmod=755 pyproject.toml README.md /opt/SimCortex/
+COPY --chmod=755 src /opt/SimCortex/src
+COPY --chmod=755 scripts /opt/SimCortex/scripts
 
-RUN python -m pip install --no-cache-dir .
-
-ENV PATH="/opt/conda-env/bin:${PATH}"
-ENV PYTHONUNBUFFERED=1
+# Install SimCortex code without reinstalling heavy dependencies.
+RUN python -m pip install --no-cache-dir --no-deps .
 
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
-CMD ["scpp", "--help"]
+
+CMD ["python", "/opt/SimCortex/scripts/run_pipeline.py", "--help"]

@@ -41,3 +41,8 @@ outputResult.nii.gz
 # Hydra outputs and execution logs
 outputs/
 .hydra/
+
+# Local Docker build artifacts
+docker/*.tar.gz
+docker/*.tgz
+docker/*.tar
