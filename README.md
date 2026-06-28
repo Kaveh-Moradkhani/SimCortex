@@ -1,4 +1,8 @@
-# SimCortex v2.0
+<p align="center">
+  <img src="docs/assets/simcortex-logo.png" alt="SimCortex logo" width="320"/>
+</p>
+
+<h1 align="center">SimCortex</h1>
 
 SimCortex v2.0 is the journal-version implementation of SimCortex: a modular and reproducible framework for cortical surface reconstruction in **MNI152 space**. It provides four practical stages that can be run independently or as a full pipeline:
 
