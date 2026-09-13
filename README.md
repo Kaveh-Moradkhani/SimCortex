@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/simcortex-logo.png" alt="SimCortex logo" width="320"/>
+  <img src="docs/assets/simcortex-logo.png" alt="SimCortex logo" width="420"/>
 </p>
 
 <p align="center">
